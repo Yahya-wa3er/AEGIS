@@ -1,0 +1,32 @@
+# Environnement virtuel
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Secrets
+.env
+
+# Bases de données locales
+*.sqlite3
+*.db
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Divers
+*.log
+
+models/
+checkpoints/

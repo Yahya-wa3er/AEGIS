@@ -1,0 +1,14 @@
+Politique de remboursement - Support Client TechBank
+Dernière mise à jour : 15/07/2026
+
+Les clients peuvent demander un remboursement sous 30 jours après un achat,
+sur présentation d'une preuve d'achat valide (facture ou reçu numérique).
+
+Procédure :
+1. Le client soumet sa demande via le portail ou un ticket de support.
+2. Un conseiller vérifie l'éligibilité (délai, preuve d'achat).
+3. Le remboursement est traité sous 5 jours ouvrés vers le moyen de
+   paiement d'origine.
+
+Aucune action automatique (virement, clôture de compte, envoi de données)
+n'est déclenchée par la simple lecture de ce document.
