@@ -26,9 +26,25 @@ from redteam.payloads import PAYLOADS
 from victim import rag, tools
 from victim.agent import VictimAgent
 
+logger = logging.getLogger("web.app")
+
 app = FastAPI(title="AEGIS Dashboard")
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "out"
+
+
+def _static_root() -> Path:
+    """Racine canonique servie au public.
+
+    Relit `FRONTEND_DIR` à chaque appel (au lieu de figer la valeur à l'import)
+    pour que la racine reste un point de configuration unique et surchargeable --
+    les tests la remplacent par un répertoire temporaire. `resolve()` déroule les
+    `..` et les liens symboliques : c'est cette forme canonique, et elle seule,
+    qui sert de base de comparaison dans `_resolve_static`.
+    """
+    return FRONTEND_DIR.resolve(strict=False)
+
+
 USER_QUERY = "Bonjour, pouvez-vous m'aider avec le ticket 48291 ?"
 SENSITIVE_TOOLS = {"transfer_funds", "send_email"}
 # Garde-fou simple pour un endpoint exposé à des visiteurs de la démo : on ne
@@ -269,7 +285,7 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
 # Montage conditionnel : si le frontend n'a pas encore été buildé (`npm run
 # build` dans frontend/), l'API reste importable et testable quand même --
 # seule la route catch-all ci-dessous échouerait alors, pas l'import du module.
-_next_dir = FRONTEND_DIR / "_next"
+_next_dir = _static_root() / "_next"
 if _next_dir.is_dir():
     app.mount("/_next", StaticFiles(directory=_next_dir), name="next-static")
 else:
@@ -280,16 +296,54 @@ else:
     )
 
 
+def _resolve_static(full_path: str) -> Path | None:
+    """Résout un chemin demandé par l'URL **à l'intérieur** de FRONTEND_DIR, ou None.
+
+    Correctif P0-1 (traversée de chemin, CWE-22). La version précédente faisait
+    simplement `FRONTEND_DIR / full_path` : `Path.__truediv__` ne résout pas les
+    `..`, c'est le noyau qui le fait au moment du `stat()`. N'importe quel fichier
+    lisible par le processus était donc servi --
+
+        curl --path-as-is http://127.0.0.1:8000/../../.env        -> clé OpenRouter
+        curl --path-as-is http://127.0.0.1:8000/../../../../../etc/passwd
+
+    Deux pièges à connaître :
+
+    1. `TestClient`/httpx **normalise les `..` côté client**, donc aucun test écrit
+       avec `TestClient` ne peut reproduire la faille. La régression est couverte
+       dans `tests/test_web_security.py`, qui appelle l'application ASGI
+       directement avec un `scope` contenant le chemin brut.
+    2. Le contrôle doit porter sur le chemin **résolu** (`resolve()` déroule `..`
+       et les liens symboliques), pas sur la chaîne d'entrée : filtrer la
+       sous-chaîne `".."` se contourne par encodage et laisse passer les liens.
+    """
+    root = _static_root()
+    try:
+        candidate = (root / full_path).resolve(strict=False)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+    # relative_to lève ValueError dès que le chemin résolu sort de la racine.
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        logger.warning("Tentative d'accès hors racine statique refusée : %r", full_path)
+        return None
+
+    return candidate
+
+
 @app.get("/{full_path:path}")
 def serve_frontend(full_path: str) -> FileResponse:
     """
     Sert l'export statique Next.js. Toute route qui ne correspond pas à un
     fichier exporté retombe sur index.html (l'app est une single-page).
     """
-    candidate = FRONTEND_DIR / full_path
-    if candidate.is_file():
+    candidate = _resolve_static(full_path)
+    if candidate is not None and candidate.is_file():
         return FileResponse(candidate)
-    index = FRONTEND_DIR / "index.html"
+
+    index = _static_root() / "index.html"
     if not index.is_file():
         raise HTTPException(
             status_code=503,

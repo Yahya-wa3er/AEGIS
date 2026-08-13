@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aegis_core.behavior_features import INPUT_DIM, ActionEvent, encode_session
+from aegis_core.model_io import ModelIntegrityError, verify_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,18 @@ class BehaviorScanResult:
 
 
 def _load_model_and_config(model_dir: str) -> tuple[object | None, dict | None]:
+    """Charge le VAE en refusant la désérialisation de code (correctif P0-5).
+
+    `torch.load()` sans `weights_only=True` déballe un pickle, donc **exécute** le
+    contenu du fichier : quiconque peut écrire dans `models/` obtenait l'exécution
+    de code dans le processus AEGIS. `weights_only=True` restreint le chargement à
+    des tenseurs et des types primitifs -- ce que `state_dict()` produit de toute
+    façon. Le défaut de torch a basculé en 2.6 ; on ne s'en remet pas au défaut,
+    on l'exige explicitement (et `requirements-ml.txt` pose le plancher).
+
+    Un `ModelIntegrityError` n'est PAS rattrapé : un artefact présent mais falsifié
+    est un incident, pas une dégradation silencieuse.
+    """
     if not _TORCH_AVAILABLE:
         return None, None
 
@@ -115,6 +128,8 @@ def _load_model_and_config(model_dir: str) -> tuple[object | None, dict | None]:
         )
         return None, None
 
+    verify_manifest(path)  # lève ModelIntegrityError si une empreinte ne correspond pas
+
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
         model = BetaVAE(
@@ -122,9 +137,12 @@ def _load_model_and_config(model_dir: str) -> tuple[object | None, dict | None]:
             hidden_dim=config["hidden_dim"],
             latent_dim=config["latent_dim"],
         )
-        model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+        state = torch.load(weights_path, map_location="cpu", weights_only=True)
+        model.load_state_dict(state)
         model.eval()
         return model, config
+    except ModelIntegrityError:
+        raise
     except Exception:
         logger.exception(
             "Échec du chargement du modèle comportemental depuis '%s' -- "

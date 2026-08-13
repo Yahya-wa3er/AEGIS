@@ -1,0 +1,32 @@
+# Dépendances DIRECTES d'AEGIS — noyau + démo web (correctif P2-6).
+#
+# Ce fichier liste ce dont le projet a besoin, avec des bornes explicites.
+# Le fichier réellement installé est `requirements.txt`, qui doit être
+# REGÉNÉRÉ (jamais édité à la main) :
+#
+#     pip install pip-tools
+#     pip-compile requirements.in    -o requirements.txt
+#     pip-compile requirements-ml.in -o requirements-ml.txt
+#
+# `pip-compile` fige aussi les dépendances transitives et leurs empreintes,
+# ce qui est le vrai correctif au risque LLM04:2026 Supply Chain : sans
+# lockfile, deux installations à deux jours d'écart n'exécutent pas le même
+# code, et rien ne le signale.
+#
+# Les bornes hautes (`<`) ne sont pas de la timidité : une majeure qui change
+# le comportement d'un composant de sécurité doit être un choix explicite,
+# relu et testé, pas une surprise au prochain `pip install`.
+
+# --- Noyau ---
+python-dotenv>=1.0,<2
+
+# --- Agent de démonstration (client LLM) ---
+openai>=1.30,<4
+
+# --- API + dashboard ---
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+
+# --- Tests ---
+pytest>=8.0,<10
+httpx>=0.27,<1        # requis par fastapi.testclient

@@ -1,0 +1,34 @@
+# Dépendances ML — nécessaires pour ENTRAÎNER les détecteurs et pour faire
+# tourner le classifieur d'injection. Séparées du noyau à dessein :
+#
+#   * torch + transformers pèsent plusieurs centaines de Mo. Un déploiement
+#     qui n'utilise que le Policy Engine, le journal d'audit et les règles
+#     regex n'a aucune raison de les embarquer.
+#   * `aegis_core/behavior_detector.py` renvoyait déjà l'utilisateur vers un
+#     `requirements-ml.txt` qui n'existait pas (constat P2-6). Il existe.
+#
+# Installation :
+#     pip install -r requirements.txt -r requirements-ml.txt
+#
+# Régénération du lock (voir requirements.in) :
+#     pip-compile requirements-ml.in -o requirements-ml.txt
+
+# --- Plancher de sécurité, à ne pas abaisser ---
+# torch >= 2.6 : c'est la version où `torch.load()` bascule en
+# `weights_only=True` par défaut. `aegis_core/behavior_detector.py` passe de
+# toute façon le paramètre explicitement (correctif P0-5), mais on refuse
+# d'installer une version où l'oubli du paramètre serait exploitable ailleurs.
+torch>=2.6,<3
+
+transformers>=4.44,<6
+datasets>=2.20,<5
+accelerate>=0.33,<2
+
+# --- Détecteur d'outliers RAG ---
+# scikit-learn n'est plus requis À L'EXÉCUTION depuis le correctif P0-5 : le
+# vectoriseur est rechargé depuis du JSON + npz, sans pickle et sans sklearn.
+# Il reste nécessaire pour l'entraînement.
+scikit-learn>=1.5,<2
+
+# numpy est la seule dépendance d'exécution du détecteur d'outliers.
+numpy>=1.26,<3

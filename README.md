@@ -15,9 +15,28 @@ Un agent IA agentique combine trois surfaces de faiblesse : les documents qu'il 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+
+pip install -r requirements.txt              # noyau + API + démo web
+pip install -r requirements-ml.txt           # + entraînement et classifieur ML (torch, transformers…)
+
 cp .env.example .env   # puis renseigne ta clé OpenRouter dans .env
 ```
+
+Les dépendances ML sont séparées à dessein : elles pèsent plusieurs centaines de Mo, et un déploiement qui n'utilise que le Policy Engine, le journal d'audit et les règles regex n'a aucune raison de les embarquer. Depuis le durcissement du chargement d'artefacts, `scikit-learn` n'est plus nécessaire à l'**exécution** du détecteur d'outliers RAG — seulement à son entraînement.
+
+Les deux fichiers `requirements*.txt` sont **générés** et ne doivent pas être édités à la main : ils figent les versions exactes de toutes les dépendances, directes et transitives. Pour les régénérer après avoir modifié un `.in` :
+
+```bash
+pip install pip-tools
+pip-compile requirements.in    -o requirements.txt
+pip-compile requirements-ml.in -o requirements-ml.txt
+```
+
+### Intégrité des artefacts de modèle
+
+Les répertoires sous `models/` contiennent un `MANIFEST.json` listant le SHA-256 de chaque artefact, écrit par les scripts d'entraînement et vérifié à chaque chargement. Un artefact modifié après l'entraînement fait échouer le chargement plutôt que de produire des scores silencieusement faux. Aucun artefact n'est chargé via `pickle` : le vectoriseur TF-IDF est du JSON + `.npz` (`allow_pickle=False`) et les poids du VAE passent par `torch.load(..., weights_only=True)`.
+
+Limite connue : le manifeste protège contre la modification d'un artefact, pas contre un attaquant qui réécrit *aussi* le manifeste — c'est la même limite structurelle que la chaîne du journal d'audit, et elle se lève de la même façon (signature Ed25519).
 
 ## Configuration du modèle LLM
 

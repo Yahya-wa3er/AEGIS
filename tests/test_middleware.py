@@ -1,6 +1,27 @@
 from dataclasses import dataclass
 
+import pytest
+
+from aegis_core.injection_detector import InjectionDetector, ScanResult
 from aegis_core.middleware import AegisGuard
+
+
+class NeutralInjectionDetector:
+    """Détecteur d'injection qui ne signale jamais rien.
+
+    Sert à ISOLER les tests qui portent sur une autre couche que la détection
+    d'injection. Sans lui, ces tests dépendent de la présence — ou non — du
+    classifieur ML dans `models/injection_classifier`, qui n'est pas versionné :
+    ils passent sur une machine où le modèle n'est pas entraîné et échouent sur
+    une machine où il l'est. Un test dont le verdict dépend d'un artefact absent
+    du dépôt ne mesure pas ce qu'il prétend mesurer.
+
+    Le faux positif du classifieur qui a motivé cette isolation est documenté et
+    testé explicitement plus bas : il n'est pas masqué, il est nommé.
+    """
+
+    def scan(self, text: str) -> ScanResult:
+        return ScanResult(risk=0.0, flagged=False, matched_patterns=(), ml_score=None)
 
 
 @dataclass(frozen=True)
@@ -130,7 +151,7 @@ def test_on_retrieval_redacts_pii_in_legitimate_document():
     voir scripts/generate_rag_corpus.py) mais contenant un email doit quand
     même voir ce contenu masqué avant transmission : l'assainissement est
     indépendant du verdict attaque/pas-attaque (section 4.5)."""
-    guard = AegisGuard()
+    guard = AegisGuard(injection_detector=NeutralInjectionDetector())
     chunks = [FakeChunk(id="doc-contact.txt", content=_DOMAIN_TEXT_WITH_EMAIL)]
     result = guard.on_retrieval(chunks, {"agent": "SupportAgent"})
     assert "EMAIL_MASQUÉ" in result[0].content
@@ -141,7 +162,7 @@ def test_on_retrieval_redacts_pii_in_legitimate_document():
 
 
 def test_robustness_report_counts_pii_redactions():
-    guard = AegisGuard()
+    guard = AegisGuard(injection_detector=NeutralInjectionDetector())
     chunks = [FakeChunk(id="doc-contact.txt", content=_DOMAIN_TEXT_WITH_EMAIL)]
     guard.on_retrieval(chunks, {"agent": "SupportAgent"})
     report = guard.robustness_report()
@@ -160,3 +181,33 @@ def test_on_response_still_flags_missing_citation_when_a_real_doc_was_available(
 
     report = guard.robustness_report()
     assert report["missing_citations"] == 1
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Faux positif connu du classifieur ML (constat P1-M2 de l'audit) : ce message "
+        "de support parfaitement bénin est classé injection à ~99,7%. Contredit "
+        "directement la mesure du README (0% de faux positifs sur le registre "
+        "'support client'). Hypothèse : le corpus d'entraînement synthétique ne "
+        "contient que des messages CLIENT -> SUPPORT ; celui-ci va dans l'autre sens. "
+        "Correctif de fond au lot 3."
+    ),
+    strict=False,
+)
+def test_ml_classifier_does_not_flag_outbound_support_message():
+    """Documente le faux positif plutôt que de le taire.
+
+    Ce test n'est pas là pour passer : il est là pour qu'on ne puisse pas oublier
+    ce trou, et pour basculer de lui-même en succès le jour où le lot 3 le corrige.
+
+    Enjeu réel, au-delà du chiffre : un faux positif de la couche 1 empêche le
+    document d'atteindre la couche 3, donc le PiiDetector ne tourne jamais dessus.
+    Les trois signaux sont présentés comme indépendants dans le README, mais ils
+    sont en réalité EN SÉRIE — une erreur amont désactive silencieusement l'aval.
+    """
+    detector = InjectionDetector()
+    scan = detector.scan(_DOMAIN_TEXT_WITH_EMAIL)
+    assert scan.flagged is False, (
+        f"message de support bénin classé comme injection "
+        f"(risque={scan.risk:.4f}, score ML={scan.ml_score}, motifs={scan.matched_patterns})"
+    )

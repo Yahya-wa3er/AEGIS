@@ -9,17 +9,34 @@ jamais besoin d'exemples d'attaque pour apprendre à quoi ressemble le domaine.
 Usage:
     python -m scripts.generate_rag_corpus   # si pas déjà fait
     python -m scripts.train_rag_outlier_detector
+
+Format de sortie (correctif P0-5)
+---------------------------------
+Ce script n'écrit plus de `vectorizer.joblib`. `joblib.dump/load` repose sur
+pickle : recharger un tel fichier exécute le code qu'il contient, ce qui faisait
+de `models/` un vecteur d'exécution de code arbitraire dans le processus AEGIS.
+Les artefacts sont désormais des données pures (JSON + npz) accompagnées d'un
+manifeste SHA-256.
+
+Le script vérifie en outre que la réimplémentation de TF-IDF utilisée à
+l'inférence (`aegis_core.rag_outlier_detector._TfidfModel`) produit exactement
+les mêmes distances que scikit-learn sur tout le jeu d'évaluation, et REFUSE
+d'écrire les artefacts en cas de divergence. C'est ce qui empêche les features
+d'entraînement et les features d'inférence de dériver silencieusement.
 """
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
-import joblib
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from aegis_core.model_io import write_manifest
+from aegis_core.rag_outlier_detector import SUPPORTED_FORMAT_VERSION, _TfidfModel
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,6 +44,12 @@ logger = logging.getLogger(__name__)
 TRAIN_PATH = Path("data/rag_corpus_train.jsonl")
 EVAL_PATH = Path("data/rag_corpus_eval.jsonl")
 OUTPUT_DIR = Path("models/rag_outlier")
+
+ARTIFACTS = ("vectorizer.json", "weights.npz", "config.json")
+# Tolérance de la vérification de parité entre scikit-learn et la réimplémentation.
+# Les deux calculs suivent le même chemin mathématique ; l'écart attendu est de
+# l'ordre de l'epsilon machine sur des float64.
+PARITY_TOLERANCE = 1e-9
 
 
 def _load_texts(path: Path) -> list[str]:
@@ -47,14 +70,18 @@ def train() -> tuple[TfidfVectorizer, np.ndarray]:
     return vectorizer, centroid
 
 
+def _sklearn_distance(vectorizer: TfidfVectorizer, centroid: np.ndarray, text: str) -> float:
+    vector = vectorizer.transform([text])
+    similarity = float(cosine_similarity(vector, centroid.reshape(1, -1))[0][0])
+    return 1.0 - similarity
+
+
 def evaluate(vectorizer: TfidfVectorizer, centroid: np.ndarray) -> float:
     rows = _load_eval_rows(EVAL_PATH)
     by_category: dict[str, list[float]] = {}
 
     for row in rows:
-        vector = vectorizer.transform([row["text"]])
-        similarity = float(cosine_similarity(vector, centroid.reshape(1, -1))[0][0])
-        distance = 1.0 - similarity
+        distance = _sklearn_distance(vectorizer, centroid, row["text"])
         by_category.setdefault(row["category"], []).append(distance)
 
     logger.info("--- Distance au centroïde par catégorie (plus haut = plus suspect) ---")
@@ -82,18 +109,93 @@ def evaluate(vectorizer: TfidfVectorizer, centroid: np.ndarray) -> float:
     return threshold
 
 
+def _build_spec(vectorizer: TfidfVectorizer) -> dict:
+    """Décrit le vectoriseur en données pures, sans pickle."""
+    return {
+        "format_version": SUPPORTED_FORMAT_VERSION,
+        "lowercase": vectorizer.lowercase,
+        "binary": vectorizer.binary,
+        "sublinear_tf": vectorizer.sublinear_tf,
+        "norm": vectorizer.norm,
+        "ngram_range": list(vectorizer.ngram_range),
+        "strip_accents": vectorizer.strip_accents,
+        "token_pattern": vectorizer.token_pattern,
+        # numpy int64 n'est pas sérialisable en JSON : on repasse en int Python.
+        "vocabulary": {term: int(index) for term, index in vectorizer.vocabulary_.items()},
+    }
+
+
+def check_parity(vectorizer: TfidfVectorizer, centroid: np.ndarray, spec: dict) -> float:
+    """Compare scikit-learn et la réimplémentation d'inférence sur tout le jeu d'éval.
+
+    Retourne l'écart maximal observé. Lève `SystemExit` si la tolérance est dépassée :
+    mieux vaut ne pas produire d'artefacts du tout que d'en produire dont les scores
+    à l'inférence diffèrent de ceux mesurés à l'entraînement.
+    """
+    idf = np.asarray(vectorizer.idf_, dtype=np.float64)
+    model = _TfidfModel(vocabulary=spec["vocabulary"], idf=idf, params=spec)
+    centroid_norm = float(np.linalg.norm(centroid))
+
+    worst = 0.0
+    worst_text = ""
+    for row in _load_eval_rows(EVAL_PATH):
+        text = row["text"]
+        expected = _sklearn_distance(vectorizer, centroid, text)
+
+        vector = model.transform(text)
+        vector_norm = float(np.linalg.norm(vector))
+        similarity = 0.0 if vector_norm == 0.0 or centroid_norm == 0.0 else float(
+            np.dot(vector, centroid) / (vector_norm * centroid_norm)
+        )
+        actual = 1.0 - similarity
+
+        gap = abs(expected - actual)
+        if gap > worst:
+            worst, worst_text = gap, text
+
+    if worst > PARITY_TOLERANCE:
+        logger.error(
+            "PARITÉ ROMPUE : écart maximal %.3e entre scikit-learn et la réimplémentation "
+            "d'inférence (tolérance %.0e). Aucun artefact écrit.\n  Document en cause : %.120s…",
+            worst, PARITY_TOLERANCE, worst_text,
+        )
+        raise SystemExit(1)
+
+    logger.info("Parité scikit-learn ↔ inférence vérifiée : écart maximal %.3e.", worst)
+    return worst
+
+
 def main() -> None:
     vectorizer, centroid = train()
     threshold = evaluate(vectorizer, centroid)
+    spec = _build_spec(vectorizer)
+    check_parity(vectorizer, centroid, spec)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump(vectorizer, OUTPUT_DIR / "vectorizer.joblib")
-    np.save(OUTPUT_DIR / "centroid.npy", centroid)
+
+    (OUTPUT_DIR / "vectorizer.json").write_text(
+        json.dumps(spec, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    np.savez(
+        OUTPUT_DIR / "weights.npz",
+        idf=np.asarray(vectorizer.idf_, dtype=np.float64),
+        centroid=np.asarray(centroid, dtype=np.float64),
+    )
     (OUTPUT_DIR / "config.json").write_text(
         json.dumps({"anomaly_threshold": threshold}, indent=2), encoding="utf-8"
     )
-    logger.info("Vectoriseur, centroïde et seuil sauvegardés dans '%s'.", OUTPUT_DIR)
+    write_manifest(OUTPUT_DIR, list(ARTIFACTS))
+
+    # Les anciens artefacts pickle ne sont plus jamais chargés ; les laisser sur
+    # disque ne ferait qu'entretenir la confusion (et garder le fichier dangereux).
+    legacy = [OUTPUT_DIR / "vectorizer.joblib", OUTPUT_DIR / "centroid.npy"]
+    for stale in legacy:
+        if stale.is_file():
+            stale.unlink()
+            logger.info("Ancien artefact supprimé : %s", stale)
+
+    logger.info("Artefacts (JSON + npz + manifeste) sauvegardés dans '%s'.", OUTPUT_DIR)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

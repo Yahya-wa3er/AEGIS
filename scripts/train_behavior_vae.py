@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from aegis_core.behavior_detector import BetaVAE, vae_loss
 from aegis_core.behavior_features import INPUT_DIM, ActionEvent, encode_session
+from aegis_core.model_io import write_manifest
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -155,6 +156,8 @@ def main() -> None:
     threshold = evaluate(model)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # `state_dict()` ne contient que des tenseurs : le fichier est donc rechargeable
+    # avec `torch.load(..., weights_only=True)` côté détecteur (correctif P0-5).
     torch.save(model.state_dict(), OUTPUT_DIR / "model.pt")
     (OUTPUT_DIR / "config.json").write_text(
         json.dumps(
@@ -169,7 +172,8 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    logger.info("Modèle et seuil sauvegardés dans '%s'.", OUTPUT_DIR)
+    write_manifest(OUTPUT_DIR, ["model.pt", "config.json"])
+    logger.info("Modèle, seuil et manifeste d'intégrité sauvegardés dans '%s'.", OUTPUT_DIR)
 
 
 if __name__ == "__main__":
