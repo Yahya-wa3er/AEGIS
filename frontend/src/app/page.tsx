@@ -29,6 +29,10 @@ type RobustnessReport = {
   audit_integrity: AuditIntegrity;
   tool_calls_total: number;
   tool_calls_blocked: number;
+  prompts_scanned: number;
+  prompts_blocked: number;
+  tool_results_scanned: number;
+  tool_results_flagged: number;
   retrievals_scanned: number;
   retrievals_flagged: number;
   behavior_scans: number;
@@ -88,6 +92,20 @@ function describeEvent(event: Record<string, unknown>): { text: string; ok: bool
     const flagged = Boolean(event.flagged);
     return {
       text: `Comportement observé : "${event.action}" → ${flagged ? "enchaînement inhabituel détecté" : "cohérent avec l'historique"}`,
+      ok: !flagged,
+    };
+  }
+  if (type === "prompt_scan") {
+    const blocked = event.decision === "block";
+    return {
+      text: `Requête de l'utilisateur analysée → ${blocked ? "bloquée, instruction d'injection détectée" : "jugée sûre"}`,
+      ok: !blocked,
+    };
+  }
+  if (type === "tool_result_scan") {
+    const flagged = Boolean(event.flagged);
+    return {
+      text: `Retour de l'outil "${event.tool}" analysé → ${flagged ? "neutralisé, contenu suspect" : "jugé sûr"}`,
       ok: !flagged,
     };
   }
@@ -175,6 +193,7 @@ async function fetchAttackCategories(): Promise<string[]> {
 
 const SENSITIVE_TOOLS = ["transfer_funds", "send_email"];
 const STEP_LABELS: Record<string, string> = {
+  prompt_scan: "Analyse de la requête",
   retrieval: "Récupération",
   llm_response: "Réponse LLM",
   tool_call: "Appel d'outil",
@@ -691,6 +710,24 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       hasFallback: true, // les règles regex tournent toujours
     },
     {
+      label: "Analyse de la requête utilisateur",
+      tone: "alert",
+      active: !!report && report.prompts_blocked > 0,
+      idle: "Aucune injection directe détectée",
+      hit: `${report?.prompts_blocked ?? 0} requête(s) bloquée(s)`,
+      dependsOn: [],
+      hasFallback: false,
+    },
+    {
+      label: "Analyse des retours d'outils",
+      tone: "alert",
+      active: !!report && report.tool_results_flagged > 0,
+      idle: "Aucun retour d'outil suspect",
+      hit: `${report?.tool_results_flagged ?? 0} retour(s) neutralisé(s)`,
+      dependsOn: [],
+      hasFallback: false,
+    },
+    {
       label: "Contrôle des permissions (Policy Engine)",
       tone: "alert",
       active: !!report && report.tool_calls_blocked > 0,
@@ -733,7 +770,7 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
 
   return (
     <section className="mt-7 bg-white border border-black/[0.08] rounded-[20px] shadow-[0_10px_40px_rgba(23,60,110,0.08)] p-5">
-      <h3 className="font-bold mb-1.5">Les 5 couches de protection AEGIS</h3>
+      <h3 className="font-bold mb-1.5">Les 7 couches de protection AEGIS</h3>
       <p className="text-xs text-[#898781] mb-3.5">
         Une couche grisée n&apos;a rien laissé passer : elle n&apos;a rien regardé. Le modèle
         correspondant n&apos;est pas entraîné, le détecteur renvoie un risque nul sur tout.

@@ -20,6 +20,21 @@ la promesse du blueprint ("branchable sur n'importe quel orchestrateur").
   règle) -- il journalise et remonte un score, à charge du dashboard/de
   l'opérateur d'agir (cf. "Limites connues" du README pour pourquoi).
 
+- on_prompt() -> quatrième point d'interception (correctif P0-3b) : scanne la
+  requête de l'utilisateur AVANT qu'elle n'atteigne le modèle. Jusqu'ici seuls
+  les documents récupérés étaient analysés : l'injection **directe** -- celle
+  que l'utilisateur tape lui-même, et le risque n°1 de l'OWASP -- n'était
+  couverte nulle part dans le pipeline, alors que le détecteur savait la
+  reconnaître quand `run_redteam` l'appelait à la main.
+
+- on_tool_result() -> cinquième point d'interception (correctif P0-3c) : scanne
+  ce qu'un outil RENVOIE avant de le réinjecter dans le contexte du modèle.
+  Tant que les outils sont des mocks, c'est sans conséquence ; dès qu'un outil
+  lit une base, appelle une API ou récupère une page, son retour est du contenu
+  contrôlable par un attaquant. C'est l'injection de second ordre, aujourd'hui
+  le vecteur le plus exploité contre les agents réels -- et le plus négligé,
+  parce que « c'est notre propre outil qui répond ».
+
 - on_retrieval() applique aussi un assainissement (section 4.5, "assainissement
   des documents") : un chunk NON signalé comme attaque peut quand même
   contenir des données personnelles/secrets (email, IBAN, clé d'API...) --
@@ -94,6 +109,27 @@ class _Neutralized:
     @property
     def content(self) -> str:
         return NEUTRALIZED_PLACEHOLDER
+
+
+@dataclass(frozen=True)
+class PromptDecision:
+    """Verdict sur la requête utilisateur.
+
+    `decision` vaut "allow" ou "block". Contrairement à un document, une requête
+    ne peut pas être « neutralisée » : on ne peut pas remplacer la question de
+    l'utilisateur par un placeholder et continuer comme si de rien n'était. Le
+    choix est binaire, ce qui rend le taux de faux positifs critique -- voir
+    `AegisGuard.on_prompt` pour la conséquence sur le choix des signaux.
+    """
+
+    decision: str
+    reason: str
+    risk: float = 0.0
+    matched_rules: tuple[str, ...] = ()
+
+    @property
+    def blocked(self) -> bool:
+        return self.decision == "block"
 
 
 @dataclass(frozen=True)
@@ -243,6 +279,87 @@ class AegisGuard:
                 safe_chunks.append(chunk)
         return safe_chunks
 
+    def on_prompt(self, user_query: str, ctx: dict[str, object]) -> PromptDecision:
+        """Scanne la requête utilisateur avant qu'elle n'atteigne le modèle (P0-3b).
+
+        **Seules les RÈGLES décident du blocage ; le score ML est journalisé mais
+        ne bloque pas.** Ce n'est pas de la timidité, c'est ce que disent les
+        mesures : sur le corpus de contrôle, les règles obtiennent 100 % de
+        blocage pour 0 % de faux positifs, là où le classifieur signale un
+        document légitime sur deux.
+
+        Un faux positif sur un document a un coût modéré -- l'agent perd un bout
+        de contexte. Un faux positif sur la requête utilisateur a un coût
+        maximal : la personne reçoit un refus pour une question parfaitement
+        normale, une fois sur deux. On bloque donc sur le signal déterministe
+        dont le taux d'erreur est mesuré à zéro, et on observe l'autre.
+
+        Le jour où le classifieur sera recalibré, ce choix se rediscutera -- avec
+        des chiffres, pas des intentions.
+        """
+        scan = self.injection_detector.scan(user_query)
+        blocked = bool(scan.matched_rules)
+
+        self.audit_log.log({
+            "type": "prompt_scan",
+            "agent": ctx.get("agent"),
+            "decision": "block" if blocked else "allow",
+            "rule_risk": scan.rule_risk,
+            "ml_score": scan.ml_score,
+            "matched_rules": list(scan.matched_rules),
+            # Rend visible le desaccord entre les deux couches : c'est le
+            # chiffre qui justifiera (ou non) de faire bloquer le ML un jour.
+            "ml_would_have_blocked": scan.ml_score is not None and scan.flagged and not blocked,
+        })
+
+        if blocked:
+            return PromptDecision(
+                decision="block",
+                reason="La requête contient une instruction de type injection de prompt.",
+                risk=scan.rule_risk,
+                matched_rules=scan.matched_rules,
+            )
+        return PromptDecision(decision="allow", reason="Aucune règle d'injection déclenchée.", risk=scan.rule_risk)
+
+    def on_tool_result(self, tool_name: str, result: object, ctx: dict[str, object]) -> str:
+        """Scanne ce qu'un outil renvoie avant réinjection dans le contexte (P0-3c).
+
+        Un retour d'outil est une **donnée**, pas une instruction -- au même titre
+        qu'un document récupéré. Le traiter comme digne de confiance parce qu'il
+        vient « de chez nous » est précisément l'erreur qui rend l'injection de
+        second ordre si efficace : l'outil est à nous, son contenu ne l'est pas.
+
+        Même politique que `on_retrieval` : neutralisation par un texte neutre et
+        constant, jamais de suppression silencieuse. Le modèle doit savoir qu'il
+        manque quelque chose, sans savoir quoi ni pourquoi.
+        """
+        text = str(result)
+        scan = self.injection_detector.scan(text)
+
+        self.audit_log.log({
+            "type": "tool_result_scan",
+            "agent": ctx.get("agent"),
+            "tool": tool_name,
+            "risk": scan.risk,
+            "rule_risk": scan.rule_risk,
+            "flagged": scan.flagged,
+            "matched_rules": list(scan.matched_rules),
+        })
+
+        if scan.flagged:
+            return NEUTRALIZED_PLACEHOLDER
+        pii_scan = self.pii_detector.scan(text)
+        if pii_scan.redacted:
+            self.audit_log.log({
+                "type": "pii_redaction",
+                "agent": ctx.get("agent"),
+                "doc_id": f"tool:{tool_name}",
+                "categories": list(pii_scan.categories),
+                "count": pii_scan.count,
+            })
+            return pii_scan.redacted_text
+        return text
+
     def on_tool_call(self, tool_name: str, params: dict[str, object], ctx: dict[str, object]) -> Decision:
         """Vérifie un appel d'outil contre le policy engine et journalise la décision."""
         decision, reason = self.policy_engine.check(str(ctx.get("agent", "")), tool_name, params)
@@ -334,6 +451,10 @@ class AegisGuard:
         flagged = [e for e in retrievals if e.event["flagged"]]
         behavior_scans = [e for e in entries if e.event["type"] == "behavior_scan"]
         behavior_flagged = [e for e in behavior_scans if e.event["flagged"]]
+        prompt_scans = [e for e in entries if e.event["type"] == "prompt_scan"]
+        prompts_blocked = [e for e in prompt_scans if e.event["decision"] == "block"]
+        tool_result_scans = [e for e in entries if e.event["type"] == "tool_result_scan"]
+        tool_results_flagged = [e for e in tool_result_scans if e.event["flagged"]]
         citation_checks = [e for e in entries if e.event["type"] == "citation_check"]
         missing_citations = [e for e in citation_checks if e.event["flagged"]]
         pii_redactions = [e for e in entries if e.event["type"] == "pii_redaction"]
@@ -347,6 +468,10 @@ class AegisGuard:
             "audit_integrity": integrity.as_dict(),
             "tool_calls_total": len(tool_calls),
             "tool_calls_blocked": len(blocked),
+            "prompts_scanned": len(prompt_scans),
+            "prompts_blocked": len(prompts_blocked),
+            "tool_results_scanned": len(tool_result_scans),
+            "tool_results_flagged": len(tool_results_flagged),
             "retrievals_scanned": len(retrievals),
             "retrievals_flagged": len(flagged),
             "behavior_scans": len(behavior_scans),

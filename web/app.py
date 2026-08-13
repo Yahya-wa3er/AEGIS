@@ -193,7 +193,13 @@ def simulate(mode: str) -> SimulationResult:
 
     if mode == "protected":
         guard = AegisGuard()
-        agent = VictimAgent(on_retrieval=guard.on_retrieval, on_tool_call=guard.on_tool_call, on_response=guard.on_response)
+        agent = VictimAgent(
+            on_retrieval=guard.on_retrieval,
+            on_tool_call=guard.on_tool_call,
+            on_response=guard.on_response,
+            on_prompt=guard.on_prompt,
+            on_tool_result=guard.on_tool_result,
+        )
     else:
         guard = None
         agent = VictimAgent()
@@ -267,7 +273,13 @@ def test_document(req: TestDocumentRequest) -> TestDocumentResult:
 
     if req.protected:
         guard = AegisGuard()
-        agent = VictimAgent(on_retrieval=guard.on_retrieval, on_tool_call=guard.on_tool_call, on_response=guard.on_response)
+        agent = VictimAgent(
+            on_retrieval=guard.on_retrieval,
+            on_tool_call=guard.on_tool_call,
+            on_response=guard.on_response,
+            on_prompt=guard.on_prompt,
+            on_tool_result=guard.on_tool_result,
+        )
     else:
         guard = None
         agent = VictimAgent()

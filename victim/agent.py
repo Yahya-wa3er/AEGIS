@@ -98,9 +98,27 @@ class AgentResult:
     trace: list[TraceStep] = field(default_factory=list)
 
 
+PromptHook = Callable[[str, dict[str, object]], object]
+ToolResultHook = Callable[[str, object, dict[str, object]], str]
 RetrievalHook = Callable[[list[rag.Document], dict[str, object]], list[rag.Document]]
 ToolCallHook = Callable[[str, dict[str, object], dict[str, object]], tuple[str, str | None]]
 ResponseHook = Callable[[str, list[str], dict[str, object]], None]
+
+
+class _AllowAll:
+    """Verdict permissif par défaut : sans AEGIS, la requête passe toujours."""
+
+    decision = "allow"
+    reason = ""
+    blocked = False
+
+
+def _default_prompt_hook(user_query: str, ctx: dict[str, object]) -> object:
+    return _AllowAll()
+
+
+def _default_tool_result_hook(tool_name: str, result: object, ctx: dict[str, object]) -> str:
+    return str(result)
 
 
 def _default_retrieval_hook(chunks: list[rag.Document], ctx: dict[str, object]) -> list[rag.Document]:
@@ -124,11 +142,15 @@ class VictimAgent:
         on_retrieval: RetrievalHook = _default_retrieval_hook,
         on_tool_call: ToolCallHook = _default_tool_call_hook,
         on_response: ResponseHook = _default_response_hook,
+        on_prompt: PromptHook = _default_prompt_hook,
+        on_tool_result: ToolResultHook = _default_tool_result_hook,
     ):
         self.name = name
         self.on_retrieval = on_retrieval
         self.on_tool_call = on_tool_call
         self.on_response = on_response
+        self.on_prompt = on_prompt
+        self.on_tool_result = on_tool_result
 
     def handle_request(self, user_query: str, documents: list[rag.Document] | None = None) -> AgentResult:
         """`documents`, si fourni, remplace `rag.retrieve()` -- utilisé par le
@@ -138,6 +160,23 @@ class VictimAgent:
         `victim/documents/`. `None` (défaut) préserve le comportement normal."""
         ctx = {"agent": self.name, "user_query": user_query}
         trace: list[TraceStep] = []
+
+        # 0. La requête de l'utilisateur est une donnée non fiable, elle aussi
+        #    (point d'interception AEGIS -- injection DIRECTE, correctif P0-3b).
+        #    Si elle est refusée, on n'appelle même pas le modèle : une injection
+        #    bloquée après l'appel LLM a déjà coûté un aller-retour et, surtout,
+        #    a déjà été lue par le modèle.
+        prompt_decision = self.on_prompt(user_query, ctx)
+        trace.append(TraceStep("prompt_scan", {
+            "decision": getattr(prompt_decision, "decision", "allow"),
+            "reason": getattr(prompt_decision, "reason", ""),
+        }))
+        if getattr(prompt_decision, "blocked", False):
+            response_text = (
+                "Votre demande n'a pas pu être traitée : elle contient des instructions "
+                "que je ne peux pas prendre en compte. Reformulez votre question."
+            )
+            return AgentResult(response=response_text, trace=trace)
 
         # 1. Retrieval (RAG) -- ou documents fournis directement, voir ci-dessus.
         chunks = documents if documents is not None else rag.retrieve(user_query, top_k=1)
@@ -179,10 +218,14 @@ class VictimAgent:
 
             if decision == "allow":
                 result = tools.TOOLS[tool_name](**params)
+                # Ce que l'outil renvoie est une DONNÉE, pas une instruction --
+                # même quand l'outil est le nôtre (point d'interception AEGIS,
+                # injection de second ordre, correctif P0-3c).
+                content = self.on_tool_result(tool_name, result, ctx)
             else:
-                result = f"[AEGIS] Action bloquée : {reason}"
+                content = f"[AEGIS] Action bloquée : {reason}"
 
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": str(result)})
+            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": str(content)})
 
         # 4. Deuxième appel LLM pour formuler la réponse finale au client
         final_message = llm_client.get_completion(messages)

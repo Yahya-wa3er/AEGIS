@@ -105,7 +105,13 @@ def run_protected() -> None:
     # base ':memory:'. C'est aussi ce que ferait un vrai déploiement -- une preuve
     # qui ne survit pas au processus qui l'a produite n'est pas une preuve.
     guard = AegisGuard(config=AegisConfig(audit_db_path=str(AUDIT_DB_PATH)))
-    agent = VictimAgent(on_retrieval=guard.on_retrieval, on_tool_call=guard.on_tool_call, on_response=guard.on_response)
+    agent = VictimAgent(
+            on_retrieval=guard.on_retrieval,
+            on_tool_call=guard.on_tool_call,
+            on_response=guard.on_response,
+            on_prompt=guard.on_prompt,
+            on_tool_result=guard.on_tool_result,
+        )
     result = agent.handle_request(USER_QUERY)
     print_trace(result.trace)
     print(f"\n  Réponse renvoyée au client : {result.response}")
