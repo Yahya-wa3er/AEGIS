@@ -4,7 +4,9 @@ Détection d'anomalies comportementales par Beta-VAE (blueprint, section 4.4).
 Contrairement à `injection_detector.py` (règles + ML en couches indépendantes),
 ce détecteur est purement ML : il n'existe pas de "règle" équivalente pour
 repérer qu'une séquence d'actions est statistiquement inhabituelle -- c'est
-précisément ce que le VAE apporte. Le principe de fail-safe reste le même :
+précisément ce que le VAE apporte. Le comportement en cas d'indisponibilité est
+le même que pour les autres détecteurs -- et il s'appelle **fail-open**, pas
+"fail-safe" (voir aegis_core/config.py) :
 si torch n'est pas installé, ou si le modèle n'est pas encore entraîné, le
 détecteur ne plante pas -- il renvoie un risque nul avec un WARNING, plutôt
 que de bloquer tout le pipeline AEGIS pour un module optionnel.

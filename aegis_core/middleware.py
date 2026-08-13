@@ -36,6 +36,13 @@ from typing import Protocol
 from aegis_core.audit_log import AuditLog
 from aegis_core.behavior_detector import BehaviorDetector, BehaviorScanResult
 from aegis_core.behavior_features import ACTIONS, SESSION_LENGTH, ActionEvent
+from aegis_core.config import (
+    DETECTOR_BEHAVIOR,
+    DETECTOR_INJECTION_ML,
+    DETECTOR_RAG_OUTLIER,
+    AegisConfig,
+    DetectorUnavailableError,
+)
 from aegis_core.injection_detector import InjectionDetector
 from aegis_core.pii_detector import PiiDetector
 from aegis_core.policy_engine import PolicyEngine
@@ -89,13 +96,22 @@ class AegisGuard:
         behavior_detector: BehaviorDetector | None = None,
         rag_outlier_detector: RagOutlierDetector | None = None,
         pii_detector: PiiDetector | None = None,
+        config: AegisConfig | None = None,
     ):
+        self.config = config or AegisConfig()
         self.policy_engine = policy_engine or PolicyEngine()
         self.injection_detector = injection_detector or InjectionDetector()
-        self.audit_log = audit_log or AuditLog()
+        self.audit_log = audit_log or AuditLog(
+            db_path=self.config.audit_db_path,
+            require_signature=self.config.require_signed_audit,
+        )
         self.behavior_detector = behavior_detector or BehaviorDetector()
         self.rag_outlier_detector = rag_outlier_detector or RagOutlierDetector()
         self.pii_detector = pii_detector or PiiDetector()
+        # Contrôle AU DÉMARRAGE, pas à la première requête : découvrir qu'un
+        # détecteur exigé est absent au moment où un document hostile arrive,
+        # c'est le découvrir trop tard (correctif P0-4).
+        self._enforce_required_detectors()
         # Fenêtre glissante des dernières actions par agent (clé = nom de l'agent),
         # bornée à SESSION_LENGTH -- c'est la mémoire vive du détecteur comportemental.
         self._behavior_windows: dict[str, list[ActionEvent]] = {}
@@ -105,6 +121,49 @@ class AegisGuard:
         # répond honnêtement "[source: aucune]" quand tout ce qu'il a reçu est
         # neutralisé, ce qui est correct et ne doit pas être compté comme manquant).
         self._last_neutralized_ids: set[str] = set()
+
+    def detector_status(self) -> dict[str, dict[str, object]]:
+        """État réel de chaque détecteur ML, pour le rapport et le tableau de bord.
+
+        Sans cette information, « 0 anomalie détectée » est ambigu : il peut
+        vouloir dire « le détecteur a regardé et n'a rien vu » ou « le détecteur
+        ne tourne pas ». Le tableau de bord affichait la première interprétation
+        dans les deux cas -- du vert pour un capteur débranché, l'anti-pattern le
+        plus dangereux en supervision de sécurité.
+        """
+        checks = (
+            (DETECTOR_INJECTION_ML, self.injection_detector,
+             "classifieur non entraîné (scripts/train_injection_classifier.py) -- "
+             "le détecteur tourne en règles regex seules"),
+            (DETECTOR_RAG_OUTLIER, self.rag_outlier_detector,
+             "modèle absent (scripts/train_rag_outlier_detector.py) -- risque toujours nul"),
+            (DETECTOR_BEHAVIOR, self.behavior_detector,
+             "modèle absent (scripts/train_behavior_vae.py) -- risque toujours nul"),
+        )
+        status: dict[str, dict[str, object]] = {}
+        for name, detector, reason in checks:
+            # getattr : un détecteur injecté par un test ou une intégration tierce
+            # n'expose pas forcément `ml_available`. On dit alors « inconnu »
+            # plutôt que d'inventer un état.
+            available = getattr(detector, "ml_available", None)
+            status[name] = {
+                "available": bool(available) if available is not None else None,
+                "required": name in self.config.required_detectors,
+                "reason": None if available else reason,
+            }
+        return status
+
+    def _enforce_required_detectors(self) -> None:
+        missing = [
+            name for name, state in self.detector_status().items()
+            if state["required"] and not state["available"]
+        ]
+        if missing:
+            raise DetectorUnavailableError(
+                "Détecteur(s) exigé(s) mais indisponible(s) : " + ", ".join(sorted(missing))
+                + ". Entraîne les modèles correspondants, ou retire-les de "
+                "AegisConfig.required_detectors si tu acceptes de tourner sans."
+            )
 
     def on_retrieval(self, chunks: list[RetrievedChunk], ctx: dict[str, object]) -> list[RetrievedChunk]:
         """Scanne chaque chunk récupéré avec DEUX signaux indépendants (section 4.5) :
@@ -252,8 +311,13 @@ class AegisGuard:
         missing_citations = [e for e in citation_checks if e.event["flagged"]]
         pii_redactions = [e for e in entries if e.event["type"] == "pii_redaction"]
         pii_items_redacted = sum(int(e.event["count"]) for e in pii_redactions)
-        integrity_ok, bad_entry = self.audit_log.verify_integrity()
+        integrity = self.audit_log.verify_integrity()
         return {
+            # État des capteurs, toujours présent : un rapport qui annonce
+            # « 0 anomalie » sans dire si le détecteur tournait est trompeur.
+            "detectors": self.detector_status(),
+            "fail_mode": self.config.fail_mode,
+            "audit_integrity": integrity.as_dict(),
             "tool_calls_total": len(tool_calls),
             "tool_calls_blocked": len(blocked),
             "retrievals_scanned": len(retrievals),
@@ -264,6 +328,9 @@ class AegisGuard:
             "missing_citations": len(missing_citations),
             "documents_sanitized": len(pii_redactions),
             "pii_items_redacted": pii_items_redacted,
-            "audit_log_integrity": integrity_ok,
-            "first_corrupted_entry": bad_entry,
+            # Conservés tels quels : le tableau de bord actuel les consomme.
+            # `audit_log_integrity` ne dit PAS « preuve opposable » -- seulement
+            # « chaîne cohérente ». La nuance est dans `audit_integrity.is_signed`.
+            "audit_log_integrity": integrity.ok,
+            "first_corrupted_entry": integrity.first_bad_entry,
         }

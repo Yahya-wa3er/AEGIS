@@ -9,7 +9,8 @@ de risque :
    (voir `scripts/train_injection_classifier.py`) — généralise à des formulations
    jamais vues, que le regex ne peut pas anticiper par construction.
 
-Principe de fail-safe : si le modèle ML n'est pas disponible (pas encore entraîné,
+Principe de fail-open (assumé, pas subi -- voir aegis_core/config.py) : si le
+modèle ML n'est pas disponible (pas encore entraîné,
 fichiers absents, erreur de chargement), le détecteur bascule silencieusement en
 mode regex uniquement plutôt que de planter — un log WARNING signale la dégradation.
 """

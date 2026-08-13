@@ -20,6 +20,12 @@
 # --- Noyau ---
 python-dotenv>=1.0,<2
 
+# Signature Ed25519 du journal d'audit (correctif P0-2). Sans ce paquet, le
+# journal reste fonctionnel mais NON SIGNÉ : détectable en cas de falsification
+# naïve, reforgeable par un attaquant disposant d'un accès en écriture. Le mode
+# dégradé est explicite et rapporté, jamais silencieux.
+cryptography>=42,<48
+
 # --- Agent de démonstration (client LLM) ---
 openai>=1.30,<4
 

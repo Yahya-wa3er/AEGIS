@@ -36,3 +36,12 @@ node_modules/
 dist/
 build/
 .next/
+
+# Cles de signature du journal d'audit (correctif P0-2)
+# La cle PRIVEE ne doit jamais etre versionnee : elle permet de forger des
+# entrees. La cle publique pourrait l'etre, mais on exclut le dossier entier
+# pour qu'aucune manipulation ne fasse passer la privee par erreur.
+keys/
+
+# Journal d'audit de la demo
+demo_audit.db

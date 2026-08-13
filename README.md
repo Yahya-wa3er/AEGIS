@@ -1,6 +1,6 @@
 # AEGIS — Zero-Trust Security Layer pour Systèmes IA Agentiques & RAG
 
-Preuve de concept fonctionnelle : un agent de support client (`victim/`) volontairement naïf, piloté par un vrai LLM (via OpenRouter), et une couche de sécurité (`aegis_core/`) qui l'intercepte pour neutraliser les injections de prompt, appliquer le principe du moindre privilège sur les appels d'outils, et repérer les comportements d'agent statistiquement anormaux — le tout journalisé dans un log infalsifiable.
+Preuve de concept fonctionnelle : un agent de support client (`victim/`) volontairement naïf, piloté par un vrai LLM (via OpenRouter), et une couche de sécurité (`aegis_core/`) qui l'intercepte pour neutraliser les injections de prompt, appliquer le principe du moindre privilège sur les appels d'outils, et repérer les comportements d'agent statistiquement anormaux — le tout journalisé dans un log chaîné et signé (Ed25519), vérifiable par un tiers.
 
 ## Le problème
 
@@ -36,7 +36,72 @@ pip-compile requirements-ml.in -o requirements-ml.txt
 
 Les répertoires sous `models/` contiennent un `MANIFEST.json` listant le SHA-256 de chaque artefact, écrit par les scripts d'entraînement et vérifié à chaque chargement. Un artefact modifié après l'entraînement fait échouer le chargement plutôt que de produire des scores silencieusement faux. Aucun artefact n'est chargé via `pickle` : le vectoriseur TF-IDF est du JSON + `.npz` (`allow_pickle=False`) et les poids du VAE passent par `torch.load(..., weights_only=True)`.
 
-Limite connue : le manifeste protège contre la modification d'un artefact, pas contre un attaquant qui réécrit *aussi* le manifeste — c'est la même limite structurelle que la chaîne du journal d'audit, et elle se lève de la même façon (signature Ed25519).
+Limite connue : le manifeste protège contre la modification d'un artefact, pas contre un attaquant qui réécrit *aussi* le manifeste. La correction est la même que pour le journal d'audit — une signature dont l'attaquant n'a pas la clé.
+
+## Journal d'audit signé (Ed25519)
+
+```bash
+python -m scripts.generate_audit_key    # une seule fois, écrit keys/
+```
+
+Sans cette étape, AEGIS fonctionne mais le journal est **non signé**, et il le dit — dans les logs au démarrage, et dans `robustness_report()["audit_integrity"]["is_signed"]`.
+
+**Pourquoi la signature est nécessaire.** Une chaîne de hachage SHA-256 sans clé ne protège que contre quelqu'un qui modifie une entrée *sans recalculer les hachages suivants*. Un attaquant qui a l'accès en écriture à la base — le même accès qu'il lui faut pour falsifier quoi que ce soit — recalcule toute la chaîne avec le même `hashlib`, et la vérification ne peut pas voir la différence puisqu'elle recalcule à l'identique.
+
+Ce n'est pas théorique : `tests/test_audit_log.py::test_forged_chain_slips_past_an_unsigned_log` exécute l'attaque et vérifie qu'elle passe. Le test suivant vérifie que la signature l'arrête.
+
+**Pourquoi Ed25519 plutôt que HMAC.** HMAC casserait l'attaque aussi bien, sans dépendance nouvelle. Mais il faut la clé secrète pour *vérifier* : un auditeur externe ne peut pas contrôler le journal sans recevoir de quoi le forger. Ed25519 sépare les deux rôles — la clé privée signe, la clé publique vérifie. Tu peux publier la clé publique, un client ou un commissaire aux comptes vérifie lui-même, et personne d'autre que le détenteur de la clé privée ne peut écrire une ligne crédible.
+
+Vérifier un journal sans détenir la clé privée :
+
+```python
+from aegis_core.audit_log import AuditLog
+from aegis_core.signing import load_signer
+
+log = AuditLog("audit.db", signer=load_signer(public_key_path="audit_ed25519.pub"))
+print(log.verify_integrity())   # ok / entrée fautive / motif / nombre de signatures vérifiées
+```
+
+Trois couches, du plus faible au plus fort : le **chaînage de hachage** attrape la modification naïve ; les **triggers SQLite append-only** font refuser `UPDATE` et `DELETE` par le moteur lui-même (ce qui arrête un bug ou une injection SQL, pas un attaquant qui supprime le trigger) ; la **signature** arrête la reforge.
+
+**Ce qui reste non couvert**, et qu'il faut dire : un attaquant qui compromet le processus *pendant* qu'il écrit signera ses propres entrées avec la clé légitime ; et la troncature — supprimer les N dernières entrées — reste indétectable sans ancrage externe du hash de tête. Le premier cas relève de l'isolation de la clé (KMS/HSM), le second d'un ancrage périodique dans un stockage append-only. Aucun des deux n'est fait ici.
+
+La clé privée est exclue du dépôt par `.gitignore`. Ne la regénère pas sans archiver le journal qu'elle signait : toutes les signatures existantes deviendraient invalides, ce qui est indiscernable d'une falsification.
+
+## Mode de défaillance : fail-open par défaut, fail-closed sur demande
+
+Quand un détecteur ML n'a pas de modèle entraîné, il renvoie `risk=0.0` sur tout, avec un WARNING. C'est un comportement **fail-open** — la version précédente de ce README l'appelait « fail-safe », ce qui est l'exact opposé.
+
+Sur un clone frais du dépôt, trois couches sur cinq sont donc inertes tant que les scripts d'entraînement n'ont pas tourné. Ce n'est pas un bug, mais ça doit être visible :
+
+```python
+from aegis_core.config import AegisConfig
+from aegis_core.middleware import AegisGuard
+
+# Par défaut : rien n'est exigé, rien ne bloque, mais l'état est rapporté.
+guard = AegisGuard()
+guard.detector_status()
+# {'injection_ml': {'available': False, 'required': False, 'reason': 'classifieur non entraîné…'}, …}
+
+# Fail-closed : AEGIS refuse de DÉMARRER si ces détecteurs manquent.
+guard = AegisGuard(config=AegisConfig(
+    required_detectors=frozenset({"rag_outlier", "behavior"}),
+    audit_db_path="/var/lib/aegis/audit.db",
+    require_signed_audit=True,
+))
+```
+
+Le refus intervient au démarrage, pas à la première requête — découvrir qu'un détecteur exigé est absent au moment où un document hostile arrive, c'est le découvrir trop tard.
+
+`required_detectors` est **vide par défaut** : à l'opérateur de déclarer ce qui est indispensable à *son* déploiement. AEGIS ne peut pas le deviner, et prétendre le deviner serait une autre forme de mensonge.
+
+Tout est configurable par l'environnement :
+
+```bash
+export AEGIS_REQUIRED_DETECTORS=rag_outlier,behavior
+export AEGIS_AUDIT_DB=/var/lib/aegis/audit.db
+export AEGIS_REQUIRE_SIGNED_AUDIT=1
+```
 
 ## Configuration du modèle LLM
 
@@ -67,7 +132,7 @@ Sans modèle entraîné, `InjectionDetector` bascule automatiquement en mode reg
 
 ## Entraîner le détecteur d'anomalies comportementales (Beta-VAE)
 
-Le détecteur (`aegis_core/behavior_detector.py`) surveille les 5 dernières actions d'un agent (rien / clôture de ticket / email / virement, + montant) et signale les enchaînements statistiquement éloignés de tout ce qu'il a vu à l'entraînement -- y compris des cas que le Policy Engine ne peut pas voir, comme une fréquence d'actions anormale (voir "Limites connues"). Contrairement au classifieur d'injection, il n'y a pas de repli par règles : sans modèle entraîné, il renvoie un risque nul (fail-safe, avec un WARNING).
+Le détecteur (`aegis_core/behavior_detector.py`) surveille les 5 dernières actions d'un agent (rien / clôture de ticket / email / virement, + montant) et signale les enchaînements statistiquement éloignés de tout ce qu'il a vu à l'entraînement -- y compris des cas que le Policy Engine ne peut pas voir, comme une fréquence d'actions anormale (voir "Limites connues"). Contrairement au classifieur d'injection, il n'y a pas de repli par règles : sans modèle entraîné, il renvoie un risque nul. C'est un comportement **fail-open**, pas « fail-safe » — un composant qui laisse tout passer quand il défaille est l'inverse de sûr. Le mode est nommé, rapporté dans `robustness_report()`, et peut être rendu bloquant via `AegisConfig.required_detectors` (voir « Mode de défaillance » ci-dessous).
 
 ```bash
 python -m scripts.generate_behavior_sessions   # génère des sessions synthétiques normales + anormales (data/)
@@ -190,4 +255,4 @@ Uniquement des règles regex (comme la V0 du détecteur d'injection) : rapide et
 
 ## En une phrase
 
-AEGIS est une couche de sécurité qui s'intercale entre un agent IA et le monde extérieur (données récupérées, outils) : elle détecte et neutralise les instructions cachées avant qu'elles n'atteignent le modèle, applique le principe du moindre privilège sur les actions, repère les comportements d'agent statistiquement anormaux, et garde une preuve infalsifiable de chaque décision.
+AEGIS est une couche de sécurité qui s'intercale entre un agent IA et le monde extérieur (données récupérées, outils) : elle détecte et neutralise les instructions cachées avant qu'elles n'atteignent le modèle, applique le principe du moindre privilège sur les actions, repère les comportements d'agent statistiquement anormaux, et garde de chaque décision une trace signée qu'un tiers peut vérifier sans pouvoir la falsifier.
