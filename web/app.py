@@ -83,7 +83,10 @@ class AnalyzeDocumentResult(BaseModel):
     truncated: bool
     injection_risk: float
     injection_flagged: bool
-    matched_patterns: list[str]
+    # Identifiants de règles + libellés lisibles. Les motifs bruts ne sortent
+    # jamais de aegis_core.injection_detector (correctif P1-9e).
+    matched_rules: list[str]
+    matched_descriptions: list[str]
     outlier_risk: float
     outlier_flagged: bool
     outlier_distance: float | None
@@ -268,7 +271,8 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
         truncated=truncated,
         injection_risk=injection_scan.risk,
         injection_flagged=injection_scan.flagged,
-        matched_patterns=list(injection_scan.matched_patterns),
+        matched_rules=list(injection_scan.matched_rules),
+        matched_descriptions=list(injection_scan.matched_descriptions),
         outlier_risk=outlier_scan.risk,
         outlier_flagged=outlier_scan.flagged,
         outlier_distance=outlier_scan.distance,

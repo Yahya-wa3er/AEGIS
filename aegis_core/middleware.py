@@ -51,6 +51,10 @@ from aegis_core.rag_outlier_detector import RagOutlierDetector
 Decision = tuple[str, str]
 CITATION_RE = re.compile(r"\[source\s*:\s*([^\]]+)\]", re.IGNORECASE)
 
+# Texte substitué à un document neutralisé. Volontairement neutre, constant, et
+# sans mention d'AEGIS ni du score de risque -- voir `_Neutralized`.
+NEUTRALIZED_PLACEHOLDER = "[Contenu indisponible.]"
+
 
 class RetrievedChunk(Protocol):
     """N'importe quel objet représentant un document récupéré par un RAG."""
@@ -61,14 +65,35 @@ class RetrievedChunk(Protocol):
 
 @dataclass(frozen=True)
 class _Neutralized:
-    """Remplace un chunk jugé suspect, pour ne jamais transmettre son contenu brut."""
+    """Remplace un chunk jugé suspect, pour ne jamais transmettre son contenu brut.
+
+    Le texte de remplacement est **neutre et constant** (correctif P1-9c). La
+    version précédente injectait `[CONTENU NEUTRALISÉ PAR AEGIS - injection
+    potentielle détectée, risque=0.98]` dans le contexte du modèle. Observé en
+    conditions réelles : le modèle a répété cette information au client final
+    (« je ne peux pas accéder ... en raison de la neutralisation du contexte »).
+
+    Deux problèmes, dont un grave :
+
+    * **Un oracle pour l'attaquant.** Le score de risque renvoyé dans le contexte
+      permet de calibrer un contournement par dichotomie -- soumettre une
+      variante, lire le score, ajuster -- sans jamais voir le code. Un détecteur
+      qui annonce sa confiance à celui qu'il détecte travaille contre lui-même.
+    * **De la reconnaissance offerte.** Nommer AEGIS et la nature du verdict
+      renseigne sur la pile de sécurité déployée.
+
+    Ce qu'il reste, et qu'on ne peut pas supprimer à ce niveau : l'attaquant
+    saura toujours *qu'il* a été bloqué (le document n'agit plus). Ce qu'on lui
+    retire, c'est de savoir **par quel signal** et **avec quelle marge** -- soit
+    tout ce dont il a besoin pour itérer efficacement.
+    """
 
     id: str
     risk: float
 
     @property
     def content(self) -> str:
-        return f"[CONTENU NEUTRALISÉ PAR AEGIS - injection potentielle détectée, risque={self.risk:.2f}]"
+        return NEUTRALIZED_PLACEHOLDER
 
 
 @dataclass(frozen=True)
@@ -191,7 +216,9 @@ class AegisGuard:
                 "doc_id": chunk.id,
                 "risk": risk,
                 "flagged": flagged,
-                "matched_patterns": list(injection_scan.matched_patterns),
+                # Identifiants de règles, pas les motifs bruts : ces entrées
+                # sortent vers l'API et le tableau de bord (correctif P1-9e).
+                "matched_rules": list(injection_scan.matched_rules),
                 "injection_risk": injection_scan.risk,
                 "outlier_risk": outlier_scan.risk,
                 "outlier_distance": outlier_scan.distance,

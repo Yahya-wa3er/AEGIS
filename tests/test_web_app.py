@@ -37,7 +37,9 @@ def test_analyze_document_flags_prompt_injection():
     body = response.json()
     assert body["injection_flagged"] is True
     assert body["neutralized"] is True
-    assert len(body["matched_patterns"]) > 0
+    assert len(body["matched_rules"]) > 0
+    # L'API publique ne doit jamais exposer les expressions régulières.
+    assert all("\\s" not in r for r in body["matched_rules"])
 
 
 def test_analyze_document_leaves_clean_text_unflagged():

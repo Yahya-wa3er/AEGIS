@@ -241,6 +241,27 @@ Cas limite découvert en conditions réelles (première exécution de `demo.py` 
 
 Uniquement des règles regex (comme la V0 du détecteur d'injection) : rapide et explicable, mais ça manque forcément ce qu'un regex ne peut pas anticiper par construction -- une donnée déguisée (espaces insérés dans un numéro de carte, IBAN écrit avec des mots), un format non couvert (numéro de téléphone étranger hors format français), ou un identifiant sensible métier qui ne ressemble à aucun des motifs codés en dur (`PII_PATTERNS` dans `aegis_core/pii_detector.py`). Un classifieur ML entraîné sur des exemples annotés (type NER pour données personnelles) généraliserait mieux, au prix d'un entraînement -- même compromis que la V0 du détecteur d'injection avant sa Phase 2. Le motif "carte bancaire" (13 à 16 chiffres consécutifs) peut aussi produire un faux positif sur une longue suite de chiffres qui n'est pas une carte (ex. un identifiant de commande à 14 chiffres) -- assumé : mieux vaut masquer par excès dans ce cas précis qu'oublier une vraie donnée sensible.
 
+## Couverture OWASP GenAI LLM Top 10 — édition 2026
+
+L'édition 2026 est parue le 6 août 2026. Sa méthodologie combine le vote d'experts (75 %) et l'analyse de 7 714 incidents réels (25 %), ce qui a redistribué le classement : *Excessive Agency* passe 6ᵉ → **3ᵉ**, *Unbounded Consumption* 10ᵉ → **6ᵉ**, *System Prompt Leakage* est élargi et renommé *Hidden Context Exposure*.
+
+Le tableau ci-dessous est une évaluation honnête de ce qui est réellement couvert. Il n'y a **aucun ✅** : aucune catégorie n'est traitée de bout en bout, et prétendre le contraire serait le genre d'écart promesse/réalité que ce projet a précisément vocation à mesurer chez les autres.
+
+| # | Risque 2026 | Couverture | Ce qui manque |
+|---|---|---|---|
+| LLM01 | Prompt Injection *(étendu au cross-modal)* | ⚠️ partielle | Indirecte via documents seulement. Règles francophones, contournées par l'anglais, l'Unicode et l'encodage. La requête utilisateur et les retours d'outils ne sont pas scannés. Rien en cross-modal. |
+| LLM02 | Sensitive Information Disclosure | ⚠️ entrée seulement | PII masquée dans les documents récupérés. **Aucun filtre de sortie.** |
+| LLM03 | **Excessive Agency** *(6ᵉ → 3ᵉ)* | ⚠️ partielle | Allow-list deny-by-default : la bonne base, et l'atout principal du projet. Manque : `sensitive_tools` sans effet, plafond de montant contournable par typage, pas de liste blanche de destinataires, pas de validation humaine, pas de quota. |
+| LLM04 | Supply Chain *(3ᵉ → 4ᵉ)* | ⚠️ partielle | Plus de chargement pickle, dépendances figées, artefacts vérifiés par SHA-256. Manque : SBOM, signature du bundle de modèles, provenance. |
+| LLM05 | Data and Model Poisoning | ⚠️ partielle | Détection d'outliers à la récupération. Rien à l'indexation, aucune provenance ni signature de document. |
+| LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | 🔴 absente | Pas de budget de jetons, pas de plafond de coût, pas de limitation de débit, pas de borne sur les boucles d'agent. Les endpoints de démo déclenchent de vrais appels LLM sans authentification. |
+| LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ amorce | La vérification de citation est la bonne intuition. Manque la vérification d'ancrage : la réponse est-elle réellement *soutenue* par la source citée ? |
+| LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
+| LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF. Pas de contrôle d'accès sur l'index, pas d'isolation multi-locataires. |
+| LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | 🔴 absente | Les retours d'outils et la réponse finale traversent sans validation. Le frontend échappe correctement (React, pas de `dangerouslySetInnerHTML`), mais c'est le seul rempart et il est côté client. |
+
+Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py` étaient ceux de l'édition **2023** sous un en-tête « 2025 » (`LLM06 Sensitive Information Disclosure`, `LLM08 Excessive Agency`). Corrigé — voir la table de correspondance en tête de ce fichier.
+
 ## État par rapport au blueprint complet
 
 | Module | Statut |

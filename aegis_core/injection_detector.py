@@ -34,14 +34,46 @@ ML_MAX_SEQ_LENGTH = 256
 # Convention du dataset deepset/prompt-injections : label 1 = injection, label 0 = légitime.
 ML_INJECTION_CLASS_INDEX = 1
 
-SUSPICIOUS_PATTERNS: tuple[str, ...] = (
-    r"ignore\s+(toutes\s+)?les?\s+instructions?\s+pr[ée]c[ée]dentes?",
-    r"system\s*override",
-    r"tu\s+es\s+maintenant\s+en\s+mode",
-    r"tu\s+dois\s+imm[ée]diatement\s+appeler",
-    r"ne\s+mentionne\s+(jamais|pas)\s+cette\s+instruction",
-    r"<!--.*-->",
+@dataclass(frozen=True)
+class Rule:
+    """Une règle de détection, identifiée par un `id` stable.
+
+    Pourquoi un identifiant plutôt que le motif lui-même (correctif P1-9e) :
+    l'ancienne version journalisait les expressions régulières brutes dans
+    `matched_patterns`, et `web/app.py` renvoie les entrées du journal au
+    frontend. **N'importe quel visiteur de la démo pouvait donc lire l'intégralité
+    des règles de détection**, et formuler son attaque en dehors -- ce que l'audit
+    a montré être trivial.
+
+    Un identifiant dit à l'opérateur *ce qui* a été reconnu sans dire à
+    l'attaquant *comment*. La `description` est destinée à l'affichage humain ;
+    le `pattern` ne quitte jamais ce module.
+    """
+
+    id: str
+    pattern: str
+    description: str
+
+
+RULES: tuple[Rule, ...] = (
+    Rule("fr.ignore_previous", r"ignore\s+(toutes\s+)?les?\s+instructions?\s+pr[ée]c[ée]dentes?",
+         "Demande d'ignorer les instructions précédentes"),
+    Rule("any.system_override", r"system\s*override",
+         "Prétendue directive système prioritaire"),
+    Rule("fr.mode_switch", r"tu\s+es\s+maintenant\s+en\s+mode",
+         "Tentative de changement de rôle ou de mode"),
+    Rule("fr.forced_tool_call", r"tu\s+dois\s+imm[ée]diatement\s+appeler",
+         "Injonction d'appeler un outil immédiatement"),
+    Rule("fr.conceal_instruction", r"ne\s+mentionne\s+(jamais|pas)\s+cette\s+instruction",
+         "Demande de dissimuler l'instruction à l'utilisateur"),
+    Rule("markup.html_comment", r"<!--.*-->",
+         "Instruction cachée dans un commentaire HTML"),
 )
+
+RULES_BY_ID: dict[str, Rule] = {rule.id: rule for rule in RULES}
+
+# Conservé pour la compatibilité des scripts qui inspectaient les motifs bruts.
+SUSPICIOUS_PATTERNS: tuple[str, ...] = tuple(rule.pattern for rule in RULES)
 
 
 @dataclass(frozen=True)
@@ -55,8 +87,15 @@ class ScanResult:
 
     risk: float
     flagged: bool
-    matched_patterns: tuple[str, ...] = field(default_factory=tuple)
+    # Identifiants de règles (ex. "fr.ignore_previous"), JAMAIS les motifs bruts :
+    # ces valeurs traversent le journal d'audit puis l'API publique (voir `Rule`).
+    matched_rules: tuple[str, ...] = field(default_factory=tuple)
     ml_score: float | None = None
+
+    @property
+    def matched_descriptions(self) -> tuple[str, ...]:
+        """Libellés lisibles des règles déclenchées, pour affichage humain."""
+        return tuple(RULES_BY_ID[rule_id].description for rule_id in self.matched_rules if rule_id in RULES_BY_ID)
 
 
 @lru_cache(maxsize=None)
@@ -113,16 +152,16 @@ class InjectionDetector:
 
     def scan(self, text: str) -> ScanResult:
         """Scanne un texte et retourne le résultat combiné des deux couches."""
-        matched_patterns = tuple(
-            pattern for pattern in SUSPICIOUS_PATTERNS if re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        matched_rules = tuple(
+            rule.id for rule in RULES if re.search(rule.pattern, text, re.IGNORECASE | re.DOTALL)
         )
-        regex_risk = min(1.0, len(matched_patterns) / 3)
+        regex_risk = min(1.0, len(matched_rules) / 3)
 
         ml_score = self._ml_score(text)
         risk = regex_risk if ml_score is None else max(regex_risk, ml_score)
-        flagged = bool(matched_patterns) or (ml_score is not None and ml_score >= self._ml_threshold)
+        flagged = bool(matched_rules) or (ml_score is not None and ml_score >= self._ml_threshold)
 
-        return ScanResult(risk=risk, flagged=flagged, matched_patterns=matched_patterns, ml_score=ml_score)
+        return ScanResult(risk=risk, flagged=flagged, matched_rules=matched_rules, ml_score=ml_score)
 
     def _ml_score(self, text: str) -> float | None:
         """Retourne la probabilité "injection" selon le classifieur ML, ou None si absent."""

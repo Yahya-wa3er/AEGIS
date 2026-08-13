@@ -5,7 +5,28 @@ import { motion } from "framer-motion";
 
 type TraceStep = { step: string; detail: Record<string, unknown> };
 type ExecutedAction = { tool: string; params: Record<string, unknown> };
+
+// État réel d'un détecteur. `available: null` = le détecteur ne sait pas se
+// décrire (intégration tierce) -- on affiche « inconnu » plutôt que d'inventer.
+type DetectorState = { available: boolean | null; required: boolean; reason: string | null };
+
+// Verdict détaillé du journal d'audit. `ok` seul ne suffit pas : « chaîne
+// cohérente » et « preuve signée vérifiable » ne sont pas la même affirmation.
+type AuditIntegrity = {
+  ok: boolean;
+  first_bad_entry: number | null;
+  reason: string | null;
+  entries_checked: number;
+  signature_mode: string;
+  signatures_verified: number;
+  unsigned_entries: number;
+  is_signed: boolean;
+};
+
 type RobustnessReport = {
+  detectors: Record<string, DetectorState>;
+  fail_mode: string;
+  audit_integrity: AuditIntegrity;
   tool_calls_total: number;
   tool_calls_blocked: number;
   retrievals_scanned: number;
@@ -82,7 +103,11 @@ type DocumentAnalysis = {
   truncated: boolean;
   injection_risk: number;
   injection_flagged: boolean;
-  matched_patterns: string[];
+  // Identifiants de règles + libellés lisibles. L'API n'expose plus les
+  // expressions régulières : les publier revenait à donner la liste exacte de
+  // ce qu'il faut éviter d'écrire pour passer au travers.
+  matched_rules: string[];
+  matched_descriptions: string[];
   outlier_risk: number;
   outlier_flagged: boolean;
   outlier_distance: number | null;
@@ -325,10 +350,10 @@ function DocumentVerdict({ result }: { result: DocumentAnalysis }) {
           <div className={result.injection_flagged ? "text-[#d03b3b] font-semibold" : "text-[#0d8f63] font-semibold"}>
             risque {result.injection_risk.toFixed(2)} — {result.injection_flagged ? "motif suspect trouvé" : "rien détecté"}
           </div>
-          {result.matched_patterns.length > 0 && (
+          {result.matched_descriptions.length > 0 && (
             <ul className="mt-1.5 list-disc list-inside text-[#898781] space-y-0.5">
-              {result.matched_patterns.map((p, i) => (
-                <li key={i} className="font-mono text-xs break-all">{p}</li>
+              {result.matched_descriptions.map((label, i) => (
+                <li key={i} className="text-xs">{label}</li>
               ))}
             </ul>
           )}
@@ -600,18 +625,49 @@ function Panel({ title, result, ranProtected }: { title: string; result: Simulat
   );
 }
 
+// Une couche peut être dans CINQ états, pas deux (correctif P0-6).
+//
+// La version précédente ne connaissait que « a détecté » (rouge) et « n'a rien
+// détecté » (vert). Sur un clone frais du dépôt, où le VAE comportemental et le
+// détecteur d'outliers n'ont pas de modèle entraîné et renvoient un risque nul
+// sur tout, elle affichait donc « ✔ Comportement jugé normal » pour un capteur
+// éteint. En supervision de sécurité, c'est l'anti-pattern le plus dangereux
+// qui existe : un opérateur qui voit du vert arrête de regarder.
+type LayerStatus = "pending" | "unavailable" | "degraded" | "alert" | "ok";
+
+const LAYER_STYLE: Record<LayerStatus, { icon: string; box: string; label: string }> = {
+  pending:     { icon: "…", box: "bg-[#fcfcfb] border-black/[0.08] text-[#898781]", label: "En attente de simulation" },
+  unavailable: { icon: "⊘", box: "bg-[#898781]/10 border-[#898781]/30 text-[#52514e]", label: "" },
+  degraded:    { icon: "▲", box: "bg-[#fab219]/15 border-[#fab219]/40 text-[#8a6100]", label: "" },
+  alert:       { icon: "⚠", box: "bg-[#d03b3b]/5 border-[#d03b3b]/20 text-[#d03b3b]", label: "" },
+  ok:          { icon: "✔", box: "bg-[#0ca30c]/5 border-[#0ca30c]/20 text-[#0d8f63]", label: "" },
+};
+
 function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
-  // `tone: "alert"` = une activité qui signale un incident (rouge quand actif) ;
   // `tone: "info"` = une action de routine qui n'indique aucune attaque, juste
   // de l'hygiène de données -- verte quand active, jamais rouge (contrairement
-  // aux 4 autres couches, un document assaini n'est pas une mauvaise nouvelle).
-  const layers: { label: string; tone: "alert" | "info"; active: boolean; idle: string; hit: string }[] = [
+  // aux autres couches, un document assaini n'est pas une mauvaise nouvelle).
+  //
+  // `dependsOn` = les détecteurs ML dont la couche a besoin. `hasFallback` = il
+  // existe un repli non-ML (les règles regex) : la couche est alors DÉGRADÉE, pas
+  // aveugle. Sans repli, un détecteur absent rend la couche muette.
+  const layers: {
+    label: string;
+    tone: "alert" | "info";
+    active: boolean;
+    idle: string;
+    hit: string;
+    dependsOn: string[];
+    hasFallback: boolean;
+  }[] = [
     {
       label: "Détection d'injection & outliers RAG",
       tone: "alert",
       active: !!report && report.retrievals_flagged > 0,
       idle: "Aucun document suspect reçu",
       hit: `${report?.retrievals_flagged ?? 0} document(s) neutralisé(s)`,
+      dependsOn: ["injection_ml", "rag_outlier"],
+      hasFallback: true, // les règles regex tournent toujours
     },
     {
       label: "Contrôle des permissions (Policy Engine)",
@@ -619,6 +675,8 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       active: !!report && report.tool_calls_blocked > 0,
       idle: "Aucune action hors politique tentée",
       hit: `${report?.tool_calls_blocked ?? 0} action(s) bloquée(s)`,
+      dependsOn: [],
+      hasFallback: false, // aucune dépendance ML : cette couche marche toujours
     },
     {
       label: "Détection d'anomalies comportementales",
@@ -626,6 +684,8 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       active: !!report && report.behavior_anomalies_flagged > 0,
       idle: "Comportement jugé normal",
       hit: `${report?.behavior_anomalies_flagged ?? 0} anomalie(s) détectée(s)`,
+      dependsOn: ["behavior"],
+      hasFallback: false, // purement ML : sans modèle, la couche ne voit rien
     },
     {
       label: "Vérification de la citation de source",
@@ -633,6 +693,8 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       active: !!report && report.missing_citations > 0,
       idle: "Sources correctement citées",
       hit: `${report?.missing_citations ?? 0} citation(s) manquante(s)`,
+      dependsOn: [],
+      hasFallback: false,
     },
     {
       label: "Assainissement (données personnelles / secrets)",
@@ -640,29 +702,51 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       active: !!report && report.documents_sanitized > 0,
       idle: "Aucune donnée personnelle rencontrée",
       hit: `${report?.pii_items_redacted ?? 0} élément(s) masqué(s) dans ${report?.documents_sanitized ?? 0} document(s)`,
+      dependsOn: [],
+      hasFallback: false,
     },
   ];
+
+  const missingFor = (names: string[]) =>
+    report ? names.filter((name) => report.detectors?.[name]?.available === false) : [];
+
   return (
     <section className="mt-7 bg-white border border-black/[0.08] rounded-[20px] shadow-[0_10px_40px_rgba(23,60,110,0.08)] p-5">
-      <h3 className="font-bold mb-3.5">Les 5 couches de protection AEGIS</h3>
+      <h3 className="font-bold mb-1.5">Les 5 couches de protection AEGIS</h3>
+      <p className="text-xs text-[#898781] mb-3.5">
+        Une couche grisée n&apos;a rien laissé passer : elle n&apos;a rien regardé. Le modèle
+        correspondant n&apos;est pas entraîné, le détecteur renvoie un risque nul sur tout.
+      </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {layers.map((layer) => {
-          const isAlert = layer.active && layer.tone === "alert";
+          const missing = missingFor(layer.dependsOn);
+          let status: LayerStatus;
+          let detail: string;
+
+          if (!report) {
+            status = "pending";
+            detail = LAYER_STYLE.pending.label;
+          } else if (missing.length > 0 && !layer.hasFallback) {
+            status = "unavailable";
+            detail = `Détecteur non chargé (${missing.join(", ")}) — cette couche ne voit rien`;
+          } else if (missing.length > 0) {
+            status = "degraded";
+            detail = `Dégradée : ${missing.join(", ")} non chargé(s), seules les règles déterministes tournent`;
+          } else if (layer.active && layer.tone === "alert") {
+            status = "alert";
+            detail = layer.hit;
+          } else {
+            status = "ok";
+            detail = layer.active ? layer.hit : layer.idle;
+          }
+
+          const style = LAYER_STYLE[status];
           return (
-            <div
-              key={layer.label}
-              className={`flex items-center gap-3 p-3.5 rounded-2xl border text-sm ${
-                !report
-                  ? "bg-[#fcfcfb] border-black/[0.08] text-[#898781]"
-                  : isAlert
-                  ? "bg-[#d03b3b]/5 border-[#d03b3b]/20 text-[#d03b3b]"
-                  : "bg-[#0ca30c]/5 border-[#0ca30c]/20 text-[#0d8f63]"
-              }`}
-            >
-              <span className="text-lg">{!report ? "…" : isAlert ? "⚠" : "✔"}</span>
+            <div key={layer.label} className={`flex items-start gap-3 p-3.5 rounded-2xl border text-sm ${style.box}`}>
+              <span className="text-lg leading-tight">{style.icon}</span>
               <div>
                 <div className="font-semibold text-[#0b0b0b]">{layer.label}</div>
-                <div>{!report ? "En attente de simulation" : layer.active ? layer.hit : layer.idle}</div>
+                <div>{detail}</div>
               </div>
             </div>
           );
@@ -681,24 +765,67 @@ function Kpi({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function Kpis({ report, scorePct }: { report: RobustnessReport | null; scorePct: number | null }) {
+function AuditIntegrityValue({ report }: { report: RobustnessReport | null }) {
+  if (!report) return <>—</>;
+  const audit = report.audit_integrity;
+
+  if (!audit?.ok) {
+    return <span className="text-[#d03b3b]">✖ Compromise</span>;
+  }
+  // Distinction essentielle : « la chaîne est cohérente » n'est PAS « la preuve
+  // est opposable ». Sans signature, un attaquant disposant d'un accès en
+  // écriture recalcule la chaîne et cet indicateur reste au vert.
+  if (!audit.is_signed) {
+    return (
+      <span className="text-[#8a6100] text-xl leading-tight whitespace-nowrap">
+        ▲ Non signée
+        <span className="block text-[11px] font-normal normal-case tracking-normal">
+          chaîne cohérente, mais reforgeable
+        </span>
+      </span>
+    );
+  }
   return (
-    <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4 mt-7">
-      <div className="bg-white border border-black/[0.08] rounded-2xl p-4 shadow-[0_10px_40px_rgba(23,60,110,0.08)]">
-        <div className="text-xs text-[#898781] uppercase tracking-wide">Robustness Score</div>
-        <div className="text-3xl font-extrabold mt-1.5">{scorePct === null ? "—" : `${scorePct}%`}</div>
-        <div className="h-2 rounded-full bg-[#e9eef5] mt-3 overflow-hidden">
-          <motion.div
-            className="h-full rounded-full bg-gradient-to-r from-[#6da7ec] to-[#2a78d6]"
-            animate={{ width: `${scorePct ?? 0}%` }}
-            transition={{ duration: 0.6 }}
-          />
+    <span className="text-[#0ca30c] text-xl leading-tight whitespace-nowrap">
+      ✔ Signée
+      <span className="block text-[11px] font-normal normal-case tracking-normal text-[#52514e]">
+        {audit.signatures_verified} signature(s) Ed25519 vérifiée(s)
+      </span>
+    </span>
+  );
+}
+
+function Kpis({ report }: { report: RobustnessReport | null }) {
+  // Le « Robustness Score » affiché ici était une valeur BINAIRE (100 ou 0),
+  // habillée en pourcentage avec une barre de progression animée qui suggérait
+  // un continuum -- et sans aucun rapport avec le score de `run_redteam.py`
+  // (block_rate x (1 - fp_rate)), qui vaut 67 % aujourd'hui. Sur le scénario de
+  // démo il affichait 100 % en permanence (correctif P1-F1).
+  //
+  // Une simulation ne produit pas un score : elle produit un verdict. On dit
+  // donc ce qu'on sait, et rien de plus.
+  const verdict = !report
+    ? null
+    : report.retrievals_flagged > 0 || report.tool_calls_blocked > 0
+    ? { text: "Attaque neutralisée", color: "text-[#0ca30c]", note: "sur cette simulation" }
+    : { text: "Rien à signaler", color: "text-[#52514e]", note: "aucune attaque sur cette simulation" };
+
+  return (
+    <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 mt-7">
+      <div className="bg-white border border-black/[0.08] rounded-2xl p-4 shadow-[0_10px_40px_rgba(23,60,110,0.08)] col-span-2">
+        <div className="text-xs text-[#898781] uppercase tracking-wide">Verdict de la simulation</div>
+        <div className={`text-2xl font-extrabold mt-1.5 ${verdict?.color ?? ""}`}>{verdict?.text ?? "—"}</div>
+        <div className="text-xs text-[#898781] mt-1">
+          {verdict?.note ?? "Lance la démonstration"}
+          {report ? ` · mode de défaillance : ${report.fail_mode}` : ""}
+        </div>
+        <div className="text-[11px] text-[#898781] mt-2 border-t border-black/[0.08] pt-2">
+          Le taux de blocage mesuré sur le corpus de red-teaming complet s&apos;obtient avec{" "}
+          <code className="font-mono">python -m redteam.run_redteam</code> — une simulation isolée
+          n&apos;est pas une mesure.
         </div>
       </div>
-      <Kpi
-        label="Intégrité du journal"
-        value={report ? (report.audit_log_integrity ? <span className="text-[#0ca30c]">✔ Intacte</span> : <span className="text-[#d03b3b]">✖ Corrompue</span>) : "—"}
-      />
+      <Kpi label="Intégrité du journal" value={<AuditIntegrityValue report={report} />} />
       <Kpi label="Appels d'outils bloqués" value={report ? report.tool_calls_blocked : "—"} />
       <Kpi label="Documents suspects détectés" value={report ? report.retrievals_flagged : "—"} />
       <Kpi label="Anomalies comportementales" value={report ? report.behavior_anomalies_flagged : "—"} />
@@ -711,10 +838,21 @@ function Kpis({ report, scorePct }: { report: RobustnessReport | null; scorePct:
 function AuditTable({ entries }: { entries: AuditEntry[] | null }) {
   return (
     <section className="mt-7 bg-white border border-black/[0.08] rounded-[20px] shadow-[0_10px_40px_rgba(23,60,110,0.08)] p-5">
-      <h3 className="font-bold mb-3">Journal d&apos;audit signé (agent protégé)</h3>
+      <h3 className="font-bold mb-3">Journal d&apos;audit (agent protégé)</h3>
+      {/*
+        L'ancien texte affirmait ici que « modifier une entrée après coup casse la
+        chaîne et devient détectable », et renvoyait vers « la démo d'intégrité plus
+        bas » qui n'a jamais existé dans cette page. Les deux étaient faux
+        (correctif P1-F2) : un chaînage de hachage sans clé se recalcule, et
+        l'audit l'a démontré en effaçant un virement de 50 000 EUR sans détection.
+      */}
       <p className="text-xs text-[#898781] mb-3 -mt-1">
-        Chaque ligne est verrouillée par un hash lié à la précédente (comme une chaîne) : modifier une entrée
-        après coup casse la chaîne et devient détectable — voir la démo d&apos;intégrité plus bas.
+        Chaque ligne est chaînée par hachage à la précédente <strong>et signée</strong> (Ed25519).
+        Le chaînage seul ne suffirait pas : un attaquant disposant d&apos;un accès en écriture le
+        recalcule. C&apos;est la signature qui rend la falsification détectable — et la clé publique
+        permet à un tiers de vérifier ce journal sans pouvoir y écrire. Sans clé générée
+        (<code className="font-mono">python -m scripts.generate_audit_key</code>), le journal
+        fonctionne mais reste <strong>non signé</strong>, et l&apos;indicateur ci-dessus le signale.
       </p>
       <table className="w-full text-sm border-collapse">
         <thead>
@@ -770,13 +908,6 @@ export default function Home() {
     setError(null);
   }
 
-  const scorePct =
-    protectedResult?.robustness_report
-      ? !protectedResult.malicious_actions_executed && protectedResult.robustness_report.audit_log_integrity
-        ? 100
-        : 0
-      : null;
-
   return (
     <main className="min-h-screen bg-[#f9f9f7] text-[#0b0b0b]">
       <div className="max-w-[1180px] mx-auto px-6 pb-20 pt-7">
@@ -789,7 +920,7 @@ export default function Home() {
           <Panel title="Sans AEGIS" result={unprotected} ranProtected={false} />
           <Panel title="Avec AEGIS" result={protectedResult} ranProtected={true} />
         </section>
-        <Kpis report={protectedResult?.robustness_report ?? null} scorePct={scorePct} />
+        <Kpis report={protectedResult?.robustness_report ?? null} />
         <ProtectionLayers report={protectedResult?.robustness_report ?? null} />
         <AuditTable entries={protectedResult?.audit_log ?? null} />
         <footer className="text-center text-[#898781] text-sm mt-10">
