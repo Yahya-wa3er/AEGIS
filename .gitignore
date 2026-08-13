@@ -30,3 +30,9 @@ Thumbs.db
 
 models/
 checkpoints/
+
+# Node
+node_modules/
+dist/
+build/
+.next/
