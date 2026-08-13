@@ -38,6 +38,38 @@ Les répertoires sous `models/` contiennent un `MANIFEST.json` listant le SHA-25
 
 Limite connue : le manifeste protège contre la modification d'un artefact, pas contre un attaquant qui réécrit *aussi* le manifeste. La correction est la même que pour le journal d'audit — une signature dont l'attaquant n'a pas la clé.
 
+## Installer AEGIS comme bibliothèque
+
+```bash
+pip install -e .              # noyau seul : règles, Policy Engine, journal signé
+pip install -e ".[ml]"        # + classifieur d'injection et détecteur comportemental
+pip install -e ".[demo]"      # + agent de démonstration et tableau de bord
+pip install -e ".[dev]"       # tout, plus les outils de test
+```
+
+Le noyau ne dépend que de `cryptography`, `jsonschema` et `numpy` — soit quelques mégaoctets. Un déploiement qui n'utilise que les règles, le Policy Engine et le journal d'audit n'embarque ni torch ni transformers.
+
+Cette séparation était **annoncée mais fausse** jusqu'au lot 4B : `injection_detector.py` importait torch au niveau du module, donc `import aegis_core.middleware` échouait sans lui. La CI le vérifie désormais à chaque push, en installant le noyau seul dans un environnement vierge — une promesse d'architecture qu'on ne teste pas finit toujours par devenir fausse.
+
+Seul `aegis_core` est distribué. `victim/`, `web/` et `redteam/` restent dans le dépôt : ce sont la démonstration et le banc de mesure, pas le produit. Les livrer ensemble obligerait tout utilisateur à installer FastAPI et le client OpenAI pour se servir d'un Policy Engine.
+
+## Intégration continue
+
+`.github/workflows/ci.yml` tourne à chaque push et chaque pull request :
+
+| Étape | Ce qu'elle attrape |
+|---|---|
+| Import du noyau sans les dépendances ML | Une dépendance ML qui se réintroduit dans le noyau |
+| Entraînement des détecteurs légers | Un script d'entraînement cassé, une parité rompue |
+| `pytest` | Les régressions fonctionnelles — dont chaque contournement fermé |
+| Red-teaming | Une baisse du taux de blocage **ou** une hausse des faux positifs |
+| `tsc`, `eslint`, `npm run build` | Une rupture du contrat d'API entre backend et frontend |
+| `python -m build` | Un `pyproject.toml` cassé |
+
+Le README annonçait depuis le début que le red-teaming était « pensé pour être branché en CI/CD ». Il ne l'était pas — et il échouait sur `main` sans que personne ne le voie. C'est ce qui rend les mesures durables plutôt que photographiques.
+
+Note sur les tests sautés : dix tests dépendent de modèles entraînés que le dépôt ne versionne pas. Sur un poste de développement ils sont **sautés** avec un message qui dit quoi lancer — un `pytest` rouge au premier clone n'apprend rien à personne. En CI les modèles sont entraînés d'abord, donc rien n'est sauté.
+
 ## Journal d'audit signé (Ed25519)
 
 ```bash

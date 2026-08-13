@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-guard"
+version = "0.4.0"
+description = "Couche de sécurité zero-trust pour agents IA et RAG : injections de prompt, moindre privilège sur les outils, journal d'audit signé."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Yahya El Houti", email = "yahya.elhouti@flugia.com" }]
+keywords = ["llm", "security", "prompt-injection", "owasp", "rag", "agent", "guardrails"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Natural Language :: French",
+]
+
+# Dépendances du NOYAU uniquement. Volontairement courtes : un déploiement qui
+# n'utilise que les règles, le Policy Engine et le journal d'audit ne doit pas
+# embarquer plusieurs centaines de mégaoctets de poids ML.
+#
+# Les trois sont par ailleurs dégradables : sans `cryptography` le journal
+# fonctionne mais n'est pas signé (et le dit), sans `jsonschema` un schéma
+# d'outil déclaré fait REFUSER l'appel plutôt que de laisser croire à une
+# vérification qui n'a pas lieu, sans `numpy` le détecteur d'outliers renvoie un
+# risque nul (et le dit). Elles sont listées ici parce qu'un déploiement sérieux
+# les veut ; l'absence de chacune est gérée et rapportée.
+dependencies = [
+    "cryptography>=42,<48",
+    "jsonschema>=4.20,<5",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# Couche ML du détecteur d'injection et détecteur comportemental.
+ml = [
+    # >=2.6 : version où torch.load bascule en weights_only=True par défaut.
+    # Le code passe le paramètre explicitement, mais on refuse d'installer une
+    # version où l'oubli serait exploitable ailleurs.
+    "torch>=2.6,<3",
+    "transformers>=4.44,<6",
+]
+# Entraînement des détecteurs (scripts/).
+train = [
+    "aegis-guard[ml]",
+    "scikit-learn>=1.5,<2",
+    "datasets>=2.20,<5",
+    "accelerate>=0.33,<2",
+]
+# Agent de démonstration et tableau de bord (victim/, web/, redteam/).
+demo = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "openai>=1.30,<4",
+    "python-dotenv>=1.0,<2",
+]
+dev = [
+    "aegis-guard[ml,train,demo]",
+    "pytest>=8.0,<10",
+    "httpx>=0.27,<1",
+    "pip-tools>=7.4",
+]
+
+[project.urls]
+Repository = "https://github.com/Yahya-wa3er/AEGIS"
+
+[project.scripts]
+aegis-audit-key = "scripts.generate_audit_key:main"
+
+# Seul `aegis_core` est distribué. `victim/`, `web/` et `redteam/` restent dans
+# le dépôt -- ce sont la démonstration et le banc de mesure, pas le produit.
+# Les livrer ensemble obligerait tout utilisateur à installer FastAPI et le
+# client OpenAI pour se servir d'un Policy Engine.
+[tool.setuptools.packages.find]
+include = ["aegis_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_models(*names): saute le test si les modèles nommés ne sont pas entraînés",
+]

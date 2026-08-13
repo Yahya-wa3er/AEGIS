@@ -1,6 +1,9 @@
+import pytest
+
 from aegis_core.rag_outlier_detector import RagOutlierDetector
 
 
+@pytest.mark.requires_models("rag_outlier")
 def test_model_loads_when_trained():
     detector = RagOutlierDetector()
     assert detector.ml_available is True
@@ -20,6 +23,7 @@ def test_normal_support_message_not_flagged():
     assert result.flagged is False
 
 
+@pytest.mark.requires_models("rag_outlier")
 def test_flags_clearly_poisoned_document():
     detector = RagOutlierDetector()
     result = detector.score(
@@ -29,6 +33,7 @@ def test_flags_clearly_poisoned_document():
     assert result.flagged is True
 
 
+@pytest.mark.requires_models("rag_outlier")
 def test_flags_legitimate_but_out_of_domain_document():
     """Cas qui démontre la valeur ajoutée par rapport à injection_detector : ce texte
     ne contient AUCUN motif d'injection, mais son sens (registre RGPD) est loin du

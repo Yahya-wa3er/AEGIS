@@ -51,6 +51,7 @@ _LEGITIMATE_OUT_OF_DOMAIN = (
 )
 
 
+@pytest.mark.requires_models("rag_outlier")
 def test_outlier_signal_alone_does_not_neutralize_a_legitimate_document():
     """Ce test disait exactement l'inverse, et c'était une erreur de lecture.
 
@@ -82,6 +83,7 @@ def test_outlier_signal_alone_does_not_neutralize_a_legitimate_document():
     assert entry.event["would_have_blocked"] is True
 
 
+@pytest.mark.requires_models("rag_outlier")
 def test_outlier_signal_can_be_given_blocking_power_explicitly():
     """Un opérateur qui a mesuré son propre taux de faux positifs sur SON corpus
     peut décider autrement -- c'est sa décision, elle doit être explicite."""
@@ -121,6 +123,7 @@ def test_robustness_report_reflects_blocked_calls():
     assert report["audit_log_integrity"] is True
 
 
+@pytest.mark.requires_models("behavior_vae")
 def test_on_session_event_flags_repeated_sensitive_bursts():
     guard = AegisGuard()
     trace = [{"step": "tool_call", "detail": {"tool": "transfer_funds", "params": {"amount": 150_000}}}]

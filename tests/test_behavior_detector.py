@@ -1,7 +1,10 @@
+import pytest
+
 from aegis_core.behavior_detector import BehaviorDetector
 from aegis_core.behavior_features import ActionEvent
 
 
+@pytest.mark.requires_models("behavior_vae")
 def test_model_loads_when_trained():
     detector = BehaviorDetector()
     assert detector.ml_available is True
@@ -22,6 +25,7 @@ def test_scores_short_session_without_crashing():
     assert 0.0 <= result.risk < 1.0
 
 
+@pytest.mark.requires_models("behavior_vae")
 def test_flags_clearly_anomalous_burst():
     detector = BehaviorDetector()
     # Rafale d'outils sensibles à montants élevés : la catégorie la plus nettement

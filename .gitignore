@@ -45,3 +45,8 @@ keys/
 
 # Journal d'audit de la demo
 demo_audit.db
+
+# Artefacts de build Python
+build/
+dist/
+*.egg-info/

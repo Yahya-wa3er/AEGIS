@@ -42,12 +42,27 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
-
 from aegis_core.normalization import views
 
 logger = logging.getLogger(__name__)
+
+# torch et transformers sont OPTIONNELS (correctif : ils étaient importés au
+# niveau du module, ce qui rendait `aegis_core` inutilisable sans eux -- en
+# contradiction directe avec la séparation annoncée entre requirements.txt et
+# requirements-ml.txt. Un déploiement qui n'utilise que les règles, le Policy
+# Engine et le journal d'audit n'a aucune raison d'embarquer 800 Mo de poids.)
+try:
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    _ML_DEPS_AVAILABLE = True
+except ImportError:  # pragma: no cover - dépend de l'environnement
+    _ML_DEPS_AVAILABLE = False
+    logger.info(
+        "torch/transformers non installés -- la couche ML du détecteur d'injection "
+        "est inactive. Les règles, elles, tournent normalement. "
+        "Pour l'activer : pip install -r requirements-ml.txt"
+    )
 
 DEFAULT_MODEL_DIR = Path("models/injection_classifier")
 DEFAULT_ML_THRESHOLD = 0.5
@@ -206,14 +221,15 @@ class ScanResult:
 
 
 @lru_cache(maxsize=None)
-def _load_ml_classifier(
-    model_dir: str,
-) -> tuple[PreTrainedTokenizerBase, PreTrainedModel] | tuple[None, None]:
+def _load_ml_classifier(model_dir: str) -> tuple[object, object] | tuple[None, None]:
     """Charge (et met en cache pour le process) le tokenizer et le modèle ML.
 
     Le cache évite de recharger les poids à chaque instanciation de InjectionDetector
     (utile en particulier pour la suite de tests, qui crée de nombreuses instances).
     """
+    if not _ML_DEPS_AVAILABLE:
+        return None, None
+
     path = Path(model_dir)
     if not path.is_dir():
         logger.warning(
@@ -261,7 +277,7 @@ class InjectionDetector:
         use_ml: bool = True,
     ) -> None:
         self._ml_threshold = ml_threshold
-        if use_ml:
+        if use_ml and _ML_DEPS_AVAILABLE:
             self._tokenizer, self._model = _load_ml_classifier(str(model_dir))
         else:
             self._tokenizer, self._model = None, None
