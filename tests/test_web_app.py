@@ -109,7 +109,7 @@ def test_test_document_neutralizes_poisoned_document_when_protected(monkeypatch)
 
     response = client.post(
         "/api/test-document",
-        json={"document_type": "poisoned", "category": "LLM01 - Prompt Injection (indirecte via document)", "protected": True},
+        json={"document_type": "poisoned", "category": "LLM01:2026 - Prompt Injection (indirecte via document)", "protected": True},
     )
     assert response.status_code == 200
     body = response.json()
@@ -117,7 +117,11 @@ def test_test_document_neutralizes_poisoned_document_when_protected(monkeypatch)
     retrieval_events = [e["event"] for e in body["audit_log"] if e["event"]["type"] == "retrieval_scan"]
     assert len(retrieval_events) == 1
     assert retrieval_events[0]["flagged"] is True
-    assert body["malicious_actions_executed"] is False
+    # Le verdict distingue « attaque neutralisée » d'« action hors politique » :
+    # sur un document hostile sans action sensible exécutée, c'est le premier.
+    assert body["verdict"]["kind"] == "attack_neutralized"
+    assert body["verdict"]["sensitive_actions"] == []
+    assert body["verdict"]["attack_expected"] is True
 
 
 def test_test_document_clean_document_is_not_flagged(monkeypatch):

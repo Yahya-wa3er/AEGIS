@@ -42,12 +42,23 @@ type RobustnessReport = {
 };
 type BehaviorScan = { risk: number; flagged: boolean; raw_error: number };
 type AuditEntry = { id: number; hash: string; event: Record<string, unknown> };
+// Le verdict distingue « une attaque a réussi » de « l'agent a fait quelque
+// chose qu'il ne devait pas ». L'ancien booléen unique confondait les deux, et
+// affichait donc « attaque » sur un document parfaitement légitime.
+type Verdict = {
+  kind: "attack_succeeded" | "attack_neutralized" | "excessive_agency" | "nominal";
+  label: string;
+  explanation: string;
+  sensitive_actions: string[];
+  attack_expected: boolean;
+};
+
 type SimulationResult = {
   mode: string;
   trace: TraceStep[];
   response: string;
   executed_actions: ExecutedAction[];
-  malicious_actions_executed: boolean;
+  verdict: Verdict;
   audit_log: AuditEntry[] | null;
   robustness_report: RobustnessReport | null;
   behavior_scan: BehaviorScan | null;
@@ -269,16 +280,27 @@ function Hero({ onLaunch, onReset, loading }: { onLaunch: () => void; onReset: (
   );
 }
 
-function StatusPill({ malicious, hasRun, ranProtected }: { malicious: boolean; hasRun: boolean; ranProtected: boolean }) {
-  if (!hasRun) {
+// Quatre verdicts, quatre couleurs. `excessive_agency` mérite son propre
+// traitement : ce n'est ni une attaque réussie (rouge vif) ni un succès (vert),
+// c'est un agent qui a fait quelque chose qu'il ne devait pas, sans attaquant.
+const VERDICT_STYLE: Record<Verdict["kind"], string> = {
+  attack_succeeded:   "text-[#d03b3b] bg-[#d03b3b]/10",
+  attack_neutralized: "text-[#0ca30c] bg-[#0ca30c]/10",
+  excessive_agency:   "text-[#8a6100] bg-[#fab219]/20",
+  nominal:            "text-[#0d8f63] bg-[#0ca30c]/10",
+};
+
+function StatusPill({ verdict, hasRun, ranProtected }: { verdict: Verdict | null; hasRun: boolean; ranProtected: boolean }) {
+  if (!hasRun || !verdict) {
     return <span className="ml-auto text-xs font-semibold px-3 py-1 rounded-full text-[#898781] bg-[#fcfcfb]">En attente</span>;
   }
-  if (malicious) {
-    return <span className="ml-auto text-xs font-semibold px-3 py-1 rounded-full text-[#d03b3b] bg-[#d03b3b]/10">⚠ Injection réussie</span>;
-  }
+  // Sans AEGIS, une attaque neutralisée l'a été par le modèle lui-même, pas par
+  // nous : le dire évite de s'attribuer un mérite qui ne nous revient pas.
+  const label =
+    verdict.kind === "attack_neutralized" && !ranProtected ? "✔ Résistance native du modèle" : verdict.label;
   return (
-    <span className="ml-auto text-xs font-semibold px-3 py-1 rounded-full text-[#0ca30c] bg-[#0ca30c]/10">
-      {ranProtected ? "✔ Neutralisée" : "✔ Résistance native"}
+    <span className={`ml-auto text-xs font-semibold px-3 py-1 rounded-full ${VERDICT_STYLE[verdict.kind]}`}>
+      {label}
     </span>
   );
 }
@@ -460,25 +482,24 @@ function DocumentAnalyzer() {
 }
 
 function MiniVerdict({ title, result }: { title: string; result: TestDocumentResult | null }) {
-  const malicious = result?.malicious_actions_executed ?? false;
+  const verdict = result?.verdict ?? null;
   return (
     <div className="bg-white rounded-[20px] border border-black/[0.08] shadow-[0_10px_40px_rgba(23,60,110,0.08)] p-5">
       <div className="flex items-center gap-2.5 mb-3">
         <span className="font-bold">{title}</span>
-        {result && (
-          <span
-            className={`ml-auto text-xs font-semibold px-3 py-1 rounded-full ${
-              malicious ? "text-[#d03b3b] bg-[#d03b3b]/10" : "text-[#0ca30c] bg-[#0ca30c]/10"
-            }`}
-          >
-            {malicious ? "⚠ Action sensible exécutée" : "✔ Aucune action sensible"}
+        {verdict && (
+          <span className={`ml-auto text-xs font-semibold px-3 py-1 rounded-full ${VERDICT_STYLE[verdict.kind]}`}>
+            {verdict.label}
           </span>
         )}
       </div>
-      {!result ? (
+      {!result || !verdict ? (
         <p className="text-[#898781] text-sm">En attente.</p>
       ) : (
         <>
+          {/* L'explication porte la nuance que le badge seul ne peut pas dire :
+              une action sensible sur un document légitime n'est pas une attaque. */}
+          <p className="text-xs text-[#898781] mb-2.5">{verdict.explanation}</p>
           <p className="text-sm text-[#52514e] mb-2">{result.response}</p>
           <ActionChips actions={result.executed_actions} />
         </>
@@ -616,7 +637,7 @@ function Panel({ title, result, ranProtected }: { title: string; result: Simulat
     <div className="bg-white rounded-[20px] border border-black/[0.08] shadow-[0_10px_40px_rgba(23,60,110,0.08)] p-5 min-h-[220px]">
       <div className="flex items-center gap-2.5 mb-3.5">
         <span className="font-bold">{title}</span>
-        <StatusPill malicious={result?.malicious_actions_executed ?? false} hasRun={!!result} ranProtected={ranProtected} />
+        <StatusPill verdict={result?.verdict ?? null} hasRun={!!result} ranProtected={ranProtected} />
       </div>
       <TraceList trace={result?.trace ?? []} />
       {result && <ActionChips actions={result.executed_actions} />}

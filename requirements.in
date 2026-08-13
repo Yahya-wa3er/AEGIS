@@ -20,6 +20,11 @@
 # --- Noyau ---
 python-dotenv>=1.0,<2
 
+# Validation de la FORME des appels d'outils contre un JSON Schema (correctif
+# P1-1b). Une couche de sécurité qui autorise un appel d'outil sans en valider
+# les paramètres autorise quelque chose qu'elle n'a pas compris.
+jsonschema>=4.20,<5
+
 # Signature Ed25519 du journal d'audit (correctif P0-2). Sans ce paquet, le
 # journal reste fonctionnel mais NON SIGNÉ : détectable en cas de falsification
 # naïve, reforgeable par un attaquant disposant d'un accès en écriture. Le mode
