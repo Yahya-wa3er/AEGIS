@@ -217,6 +217,19 @@ Les deux faux positifs venaient de la règle `<!--.*-->`, qui signalait *tout* c
 
 **Précaution de méthode.** Les neuf variantes d'obfuscation ont été ajoutées au corpus de red-teaming *après* le correctif. Un corpus construit sur les cas qu'on vient de faire passer ne mesure plus rien — ici le correctif est une normalisation générique, aucune règle ne cible un payload en particulier, et leur rôle est d'empêcher la régression. Le score sur 12 attaques reste par ailleurs statistiquement faible : voir la limite ci-dessous.
 
+**Sur une machine où le classifieur ML est entraîné, le tableau change.** Les règles restent à 100 % / 0 %, mais l'ensemble tombe à **50 % de faux positifs** — cinq documents légitimes sur dix signalés à tort, tous par le classifieur (`matched_rules` vide, `ml_score` entre 0,95 et 0,99). `run_redteam` affiche désormais les deux configurations côte à côte, précisément pour que ce coût soit visible :
+
+```
+Comparaison par couche (blocage / faux positifs) :
+  Règles seules      : 100% / 0%
+  Règles + ML        : 100% / 50%
+  --> Les faux positifs viennent du classifieur ML, pas des règles.
+```
+
+Conséquence pratique : `InjectionDetector(use_ml=False)` est un mode de déploiement légitime, pas seulement une commodité de test. La couche de règles est déterministe, explicable et mesurée ; le classifieur, dans son état actuel, coûte plus qu'il ne rapporte sur du texte hors de son registre d'entraînement.
+
+**La porte CI vérifie maintenant les deux bouts.** Un seuil de blocage seul se satisfait d'un détecteur qui bloque tout : 100 % de recall, 100 % de faux positifs, exit 0. `MAX_FALSE_POSITIVE_RATE` ferme cette porte. Sa valeur (55 %) est un **cliquet** calé sur la mesure du jour, pas une cible — il est là pour empêcher que ça empire.
+
 **Ce corpus est trop petit.** Douze attaques, dix contrôles. Chaque payload pèse 8 points de recall. Un vrai benchmark demande des centaines de cas issus de corpus publics (AgentDojo, garak, PyRIT, `deepset/prompt-injections`) — c'est le prochain chantier de mesure, et tant qu'il n'est pas fait, le « Robustness Score » doit être lu comme un garde-fou de non-régression, pas comme une mesure de robustesse.
 
 ### Classifieur ML d'injection (section 4.2)

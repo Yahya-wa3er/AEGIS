@@ -189,6 +189,12 @@ class ScanResult:
     # ces valeurs traversent le journal d'audit puis l'API publique (voir `Rule`).
     matched_rules: tuple[str, ...] = field(default_factory=tuple)
     ml_score: float | None = None
+    # Risque de la seule couche de règles, exposé séparément du score ML.
+    # `risk` étant un max() des deux, un score ML élevé masque entièrement la
+    # contribution des règles -- et un opérateur qui voit « risque 0.99 » sans
+    # savoir laquelle des deux couches parle ne peut rien en faire (constat
+    # P1-M4 : les échelles ne sont pas commensurables).
+    rule_risk: float = 0.0
     # True si le document a dû être tronqué avant analyse. Ne pas le dire
     # reviendrait à laisser croire que tout a été scanné.
     truncated: bool = False
@@ -236,15 +242,29 @@ class InjectionDetector:
     Args:
         model_dir: répertoire du modèle fine-tuné (voir `train_injection_classifier.py`).
         ml_threshold: score ML à partir duquel une entrée est considérée comme injection.
+        use_ml: désactive explicitement la couche ML pour cette instance.
+
+    `use_ml=False` n'est pas qu'une commodité de test. La couche de règles est
+    déterministe, explicable et mesurée ; la couche ML, dans son état actuel,
+    signale un document légitime sur deux (voir "Limites connues" du README).
+    Un déploiement peut légitimement vouloir la première sans la seconde --
+    et les tests qui portent sur les règles DOIVENT l'utiliser, sinon leur
+    verdict dépend de la présence d'un modèle qui n'est pas versionné dans le
+    dépôt. C'est exactement le piège dans lequel `tests/test_normalization.py`
+    est tombé : vert sur une machine sans modèle, rouge sur une machine avec.
     """
 
     def __init__(
         self,
         model_dir: Path | str = DEFAULT_MODEL_DIR,
         ml_threshold: float = DEFAULT_ML_THRESHOLD,
+        use_ml: bool = True,
     ) -> None:
         self._ml_threshold = ml_threshold
-        self._tokenizer, self._model = _load_ml_classifier(str(model_dir))
+        if use_ml:
+            self._tokenizer, self._model = _load_ml_classifier(str(model_dir))
+        else:
+            self._tokenizer, self._model = None, None
 
     @property
     def ml_available(self) -> bool:
@@ -294,15 +314,15 @@ class InjectionDetector:
                 evasions.add("evasion.obfuscated_text")
 
         matched_rules = tuple(sorted(hit_views) + sorted(evasions))
-        regex_risk = min(1.0, len(matched_rules) / 3)
+        rule_risk = min(1.0, len(matched_rules) / 3)
 
         ml_score = self._ml_score(text)
-        risk = regex_risk if ml_score is None else max(regex_risk, ml_score)
+        risk = rule_risk if ml_score is None else max(rule_risk, ml_score)
         flagged = bool(matched_rules) or (ml_score is not None and ml_score >= self._ml_threshold)
 
         return ScanResult(
             risk=risk, flagged=flagged, matched_rules=matched_rules,
-            ml_score=ml_score, truncated=truncated,
+            ml_score=ml_score, rule_risk=rule_risk, truncated=truncated,
         )
 
     @staticmethod

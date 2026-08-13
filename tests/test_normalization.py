@@ -5,8 +5,20 @@ Chaque cas ci-dessous a été exploité avec succès contre la version précéde
 détecteur : dix contournements testés, dix passés. Aucun ne demandait plus que de
 retaper la même phrase autrement.
 
-Ces tests portent sur la couche de RÈGLES seule, sans classifieur ML -- c'est
-l'état d'un clone frais du dépôt, et donc le pire cas.
+Ces tests portent sur la couche de RÈGLES seule (`use_ml=False`), et c'est
+délibéré.
+
+Écrits sans ce garde-fou, ils passaient sur une machine sans
+`models/injection_classifier` et échouaient sur une machine où le modèle est
+entraîné -- huit échecs, tous avec `matched_rules=()`, c'est-à-dire aucune règle
+déclenchée et un score ML de 0,95 à 0,99 sur des documents parfaitement bénins.
+Un test dont le verdict dépend d'un artefact absent du dépôt ne mesure pas ce
+qu'il prétend mesurer : c'est exactement le piège déjà rencontré sur
+`tests/test_middleware.py`, retombé une seconde fois.
+
+Le taux de faux positifs du classifieur est mesuré et documenté ailleurs
+(`test_ml_false_positive_rate_is_measured_not_assumed`), là où il constitue le
+sujet du test et non un effet de bord.
 """
 from __future__ import annotations
 
@@ -20,7 +32,8 @@ from aegis_core.normalization import canonical, collapse_spaced_letters, views
 
 @pytest.fixture(scope="module")
 def detector() -> InjectionDetector:
-    return InjectionDetector()
+    """Détecteur RÈGLES SEULES : déterministe, indépendant des artefacts ML."""
+    return InjectionDetector(use_ml=False)
 
 
 # --- Les contournements de l'audit ----------------------------------------
@@ -96,7 +109,11 @@ def test_obfuscation_is_reported_as_a_signal_of_its_own(detector):
 
     assert "evasion.obfuscated_text" not in plain.matched_rules
     assert "evasion.obfuscated_text" in hidden.matched_rules
-    assert hidden.risk > plain.risk, "l'obfuscation doit augmenter le risque, pas le laisser inchangé"
+    # On compare `rule_risk` et non `risk` : ce dernier est un max() avec le score
+    # ML, qui écrase entièrement la contribution des règles quand il est élevé.
+    # Comparer `risk` reviendrait à tester le classifieur en croyant tester les
+    # règles (constat P1-M4 : les deux échelles ne sont pas commensurables).
+    assert hidden.rule_risk > plain.rule_risk, "l'obfuscation doit augmenter le risque des règles"
 
 
 def test_rule_descriptions_cover_meta_rules(detector):
@@ -159,3 +176,50 @@ def test_views_are_deduplicated_and_start_with_the_canonical_form():
     result = views("Bonjour <!-- Bonjour -->")
     assert result[0].name == "canonique"
     assert len({v.text for v in result}) == len(result)
+
+
+# --- Ce que la couche ML fait, mesuré plutôt que supposé -------------------
+
+@pytest.mark.skipif(
+    not InjectionDetector().ml_available,
+    reason="classifieur ML non entraîné : rien à mesurer sur cette machine",
+)
+def test_ml_false_positive_rate_is_measured_not_assumed():
+    """Mesure le taux de faux positifs du classifieur sur les documents bénins.
+
+    Ce test n'échoue pas tant que le taux ne DÉPASSE pas ce qui est documenté
+    dans le README. Il n'est pas là pour valider le classifieur -- il est là
+    pour que son défaut soit un chiffre versionné plutôt qu'une impression, et
+    pour attraper une aggravation.
+
+    Contexte : sur le corpus de red-teaming, la couche de règles obtient 100 %
+    de blocage et 0 % de faux positifs ; le classifieur, lui, signale un
+    document légitime sur deux. C'est aujourd'hui le facteur limitant du
+    « Robustness Score », et le sujet du prochain lot de mesure.
+    """
+    ml_detector = InjectionDetector()
+    flagged = [name for name, text in _BENIGN.items() if ml_detector.scan(text).flagged]
+    rate = len(flagged) / len(_BENIGN)
+
+    assert rate <= 0.7, (
+        f"Le taux de faux positifs du classifieur ML atteint {rate:.0%} "
+        f"(plafond de non-régression : 70%). Documents signalés à tort : {sorted(flagged)}"
+    )
+
+
+@pytest.mark.skipif(
+    not InjectionDetector().ml_available,
+    reason="classifieur ML non entraîné : rien à mesurer sur cette machine",
+)
+def test_rules_layer_is_strictly_cleaner_than_the_ml_layer_on_benign_text():
+    """Vérifie l'affirmation sur laquelle repose `use_ml=False` : sur du texte
+    bénin, les règles se trompent moins que le classifieur. Si ça cessait d'être
+    vrai, la recommandation de pouvoir déployer sans ML tomberait avec."""
+    rules_only = InjectionDetector(use_ml=False)
+    combined = InjectionDetector()
+
+    rule_fp = sum(rules_only.scan(t).flagged for t in _BENIGN.values())
+    ml_fp = sum(combined.scan(t).flagged for t in _BENIGN.values())
+
+    assert rule_fp == 0
+    assert rule_fp <= ml_fp
