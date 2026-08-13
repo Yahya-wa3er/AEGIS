@@ -96,6 +96,10 @@ class AgentResult:
 
     response: str
     trace: list[TraceStep] = field(default_factory=list)
+    # Contexte de la requête, tel que les hooks l'ont vu et enrichi. Exposé pour
+    # que l'appelant puisse le passer à `on_session_event` : c'est lui qui porte
+    # `session_id`, donc l'isolation de la fenêtre comportementale.
+    ctx: dict[str, object] = field(default_factory=dict)
 
 
 PromptHook = Callable[[str, dict[str, object]], object]
@@ -152,13 +156,29 @@ class VictimAgent:
         self.on_prompt = on_prompt
         self.on_tool_result = on_tool_result
 
-    def handle_request(self, user_query: str, documents: list[rag.Document] | None = None) -> AgentResult:
+    def handle_request(
+        self,
+        user_query: str,
+        documents: list[rag.Document] | None = None,
+        session_id: str | None = None,
+        tenant: str | None = None,
+    ) -> AgentResult:
         """`documents`, si fourni, remplace `rag.retrieve()` -- utilisé par le
         laboratoire de robustesse du dashboard (`web/app.py`, endpoint
         `/api/test-document`) pour tester l'agent avec un document choisi ou
         généré à la volée, sans avoir à l'écrire sur disque dans
-        `victim/documents/`. `None` (défaut) préserve le comportement normal."""
-        ctx = {"agent": self.name, "user_query": user_query}
+        `victim/documents/`. `None` (défaut) préserve le comportement normal.
+
+        `session_id` et `tenant` ne servent pas à l'agent : ils sont posés dans
+        le contexte pour qu'AEGIS puisse isoler l'état comportemental par
+        session plutôt que par agent (voir `aegis_core.session`). Un agent réel
+        les tient de son orchestrateur ; ici, l'appelant les fournit.
+        """
+        ctx: dict[str, object] = {"agent": self.name, "user_query": user_query}
+        if session_id is not None:
+            ctx["session_id"] = session_id
+        if tenant is not None:
+            ctx["tenant"] = tenant
         trace: list[TraceStep] = []
 
         # 0. La requête de l'utilisateur est une donnée non fiable, elle aussi
@@ -176,7 +196,7 @@ class VictimAgent:
                 "Votre demande n'a pas pu être traitée : elle contient des instructions "
                 "que je ne peux pas prendre en compte. Reformulez votre question."
             )
-            return AgentResult(response=response_text, trace=trace)
+            return AgentResult(response=response_text, trace=trace, ctx=ctx)
 
         # 1. Retrieval (RAG) -- ou documents fournis directement, voir ci-dessus.
         chunks = documents if documents is not None else rag.retrieve(user_query, top_k=1)
@@ -202,7 +222,7 @@ class VictimAgent:
         if not assistant_message.tool_calls:
             response_text = assistant_message.content or ""
             self.on_response(response_text, doc_ids, ctx)  # <-- point d'interception AEGIS
-            return AgentResult(response=response_text, trace=trace)
+            return AgentResult(response=response_text, trace=trace, ctx=ctx)
 
         messages.append(assistant_message.model_dump(exclude_unset=True))
 
@@ -232,4 +252,4 @@ class VictimAgent:
         trace.append(TraceStep("final_response", {"content": final_message.content}))
         response_text = final_message.content or ""
         self.on_response(response_text, doc_ids, ctx)  # <-- point d'interception AEGIS
-        return AgentResult(response=response_text, trace=trace)
+        return AgentResult(response=response_text, trace=trace, ctx=ctx)

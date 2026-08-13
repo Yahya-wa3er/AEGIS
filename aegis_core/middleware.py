@@ -65,9 +65,21 @@ from aegis_core.injection_detector import InjectionDetector
 from aegis_core.pii_detector import PiiDetector
 from aegis_core.policy_engine import PolicyEngine
 from aegis_core.rag_outlier_detector import RagOutlierDetector
+from aegis_core.session import SessionKey, SessionStore
 
 Decision = tuple[str, str]
 CITATION_RE = re.compile(r"\[source\s*:\s*([^\]]+)\]", re.IGNORECASE)
+
+# Clé sous laquelle `on_retrieval` dépose, DANS LE CONTEXTE DE LA REQUÊTE, les
+# identifiants des documents qu'il a neutralisés -- pour que `on_response`, plus
+# loin dans la même requête, sache que le modèle n'a jamais lu ces documents.
+#
+# C'était auparavant un attribut d'instance (`self._last_neutralized_ids`),
+# écrasé à chaque `on_retrieval` : sous deux requêtes concurrentes, la seconde
+# effaçait l'état de la première, et la vérification de citation portait alors
+# sur les documents de quelqu'un d'autre. Un état de requête n'a rien à faire
+# sur un objet partagé : il appartient au contexte de la requête (P1-5b).
+NEUTRALIZED_CTX_KEY = "_aegis_neutralized_ids"
 
 # Texte substitué à un document neutralisé. Volontairement neutre, constant, et
 # sans mention d'AEGIS ni du score de risque -- voir `_Neutralized`.
@@ -161,6 +173,7 @@ class AegisGuard:
         rag_outlier_detector: RagOutlierDetector | None = None,
         pii_detector: PiiDetector | None = None,
         config: AegisConfig | None = None,
+        session_store: SessionStore | None = None,
     ):
         self.config = config or AegisConfig()
         self.policy_engine = policy_engine or PolicyEngine()
@@ -176,15 +189,15 @@ class AegisGuard:
         # détecteur exigé est absent au moment où un document hostile arrive,
         # c'est le découvrir trop tard (correctif P0-4).
         self._enforce_required_detectors()
-        # Fenêtre glissante des dernières actions par agent (clé = nom de l'agent),
-        # bornée à SESSION_LENGTH -- c'est la mémoire vive du détecteur comportemental.
-        self._behavior_windows: dict[str, list[ActionEvent]] = {}
-        # Ids neutralisés par le DERNIER on_retrieval -- permet à on_response de
-        # savoir qu'un doc_id fourni ne correspond en réalité à AUCUN contenu que
-        # le LLM a pu lire (voir bug trouvé en conditions réelles : le modèle
-        # répond honnêtement "[source: aucune]" quand tout ce qu'il a reçu est
-        # neutralisé, ce qui est correct et ne doit pas être compté comme manquant).
-        self._last_neutralized_ids: set[str] = set()
+        # Fenêtre glissante des dernières actions, par (tenant, agent, session) et
+        # bornée à SESSION_LENGTH : c'est la mémoire vive du détecteur
+        # comportemental. Elle était indexée par NOM D'AGENT, donc partagée par
+        # tous les utilisateurs du même agent -- voir `aegis_core.session` pour
+        # ce que ça permettait (correctif P1-5a).
+        # `is not None` et non `or` : un SessionStore vide est falsy (il définit
+        # __len__), donc `session_store or SessionStore()` jetait silencieusement
+        # le magasin fourni par l'appelant tant qu'aucune session n'y était née.
+        self.sessions = session_store if session_store is not None else SessionStore()
 
     def detector_status(self) -> dict[str, dict[str, object]]:
         """État réel de chaque détecteur ML, pour le rapport et le tableau de bord.
@@ -287,9 +300,14 @@ class AegisGuard:
         Un chunk qui n'est PAS neutralisé passe ensuite par `pii_detector`, qui
         masque les données personnelles qu'il pourrait contenir -- un document
         légitime n'est pas exempt de ce risque.
+
+        Les identifiants neutralisés sont déposés dans `ctx`, pas sur `self` :
+        c'est un état de REQUÊTE, et `on_response` le relira dans le même `ctx`
+        (voir `NEUTRALIZED_CTX_KEY`).
         """
         safe_chunks: list[RetrievedChunk] = []
-        self._last_neutralized_ids = set()
+        neutralized: set[str] = set()
+        ctx[NEUTRALIZED_CTX_KEY] = neutralized
         for chunk in chunks:
             blocked, details = self._content_verdict(chunk.content)
 
@@ -302,7 +320,7 @@ class AegisGuard:
             })
 
             if blocked:
-                self._last_neutralized_ids.add(chunk.id)
+                neutralized.add(chunk.id)
                 safe_chunks.append(_Neutralized(chunk.id, float(details["risk"])))
                 continue
 
@@ -436,12 +454,30 @@ class AegisGuard:
         amount = params.get("amount", 0.0) if isinstance(params, dict) else 0.0
         return ActionEvent(action=tool_name, amount=float(amount or 0.0))
 
-    def on_session_event(self, agent_name: str, trace: list[dict[str, object]]) -> BehaviorScanResult:
+    def on_session_event(
+        self,
+        agent_name: str,
+        trace: list[dict[str, object]],
+        ctx: dict[str, object] | None = None,
+    ) -> BehaviorScanResult:
         """À appeler une fois par requête terminée (voir demo.py / web/app.py) :
-        met à jour la fenêtre glissante de l'agent et scanne son comportement récent.
+        met à jour la fenêtre glissante de la SESSION et scanne son comportement
+        récent.
+
+        `ctx` est celui de la requête (`{"agent", "session_id", "tenant", ...}`).
+        La fenêtre est indexée par `(tenant, agent, session_id)` : sans ça, tous
+        les utilisateurs du même agent partagent la même suite d'actions, ce qui
+        permet à la fois de diluer un comportement hostile dans le trafic
+        légitime et de faire monter le score de quelqu'un d'autre (P1-5a).
+
+        `ctx=None` reste accepté pour ne pas casser les intégrations existantes,
+        mais produit une clé **anonyme** -- donc partagée, comme avant. La
+        différence est que `robustness_report()` le dit désormais, au lieu de
+        laisser croire à une isolation qui n'existe pas.
         """
+        key = SessionKey.from_ctx(ctx, agent=agent_name)
         event = self._dominant_action(trace)
-        window = self._behavior_windows.setdefault(agent_name, [])
+        window: list[ActionEvent] = self.sessions.get(key, list)
         window.append(event)
         del window[:-SESSION_LENGTH]  # ne garder que les SESSION_LENGTH derniers événements
 
@@ -449,6 +485,7 @@ class AegisGuard:
         self.audit_log.log({
             "type": "behavior_scan",
             "agent": agent_name,
+            "session": key.as_dict(),
             "action": event.action,
             "amount": event.amount,
             "risk": scan.risk,
@@ -464,14 +501,23 @@ class AegisGuard:
         même philosophie que le scan comportemental (section 4.4) : probabiliste,
         pas une règle absolue.
 
-        `doc_ids` peut contenir des ids de chunks neutralisés par le dernier
-        on_retrieval : le LLM n'a alors reçu que le message "[CONTENU
-        NEUTRALISÉ...]", jamais le vrai contenu. Dire "[source: aucune]" dans
-        ce cas est la réponse honnête, pas une source manquante -- on retire
-        donc ces ids de la liste avant de juger la citation (bug trouvé en
-        conditions réelles, cf. commentaire sur _last_neutralized_ids).
+        `doc_ids` peut contenir des ids de chunks neutralisés par `on_retrieval`
+        DANS LA MÊME REQUÊTE : le LLM n'a alors reçu que le message
+        "[Contenu indisponible.]", jamais le vrai contenu. Dire "[source:
+        aucune]" est dans ce cas la réponse honnête, pas une source manquante --
+        on retire donc ces ids de la liste avant de juger la citation (bug
+        trouvé en conditions réelles).
+
+        Cette liste est lue dans `ctx`, où `on_retrieval` l'a déposée. Si `ctx`
+        ne la porte pas -- appel isolé, ou contexte différent de celui du
+        retrieval -- on ne devine pas : on juge sur tous les `doc_ids` et on
+        journalise `neutralized_known: false`, pour que la sur-détection qui en
+        découle soit lisible plutôt que mystérieuse.
         """
-        real_doc_ids = [d for d in doc_ids if d not in self._last_neutralized_ids]
+        raw = ctx.get(NEUTRALIZED_CTX_KEY)
+        known = isinstance(raw, (set, frozenset, list, tuple))
+        neutralized = set(raw) if known else set()  # type: ignore[arg-type]
+        real_doc_ids = [d for d in doc_ids if d not in neutralized]
         match = CITATION_RE.search(response_text)
         cited = match.group(1).strip() if match else None
         valid = cited is not None and (cited in real_doc_ids or (not real_doc_ids and cited.lower() == "aucune"))
@@ -479,6 +525,7 @@ class AegisGuard:
             "type": "citation_check",
             "agent": ctx.get("agent"),
             "doc_ids": doc_ids,
+            "neutralized_known": known,
             "cited": cited,
             "flagged": not valid,
         })
@@ -510,6 +557,11 @@ class AegisGuard:
             "detectors": self.detector_status(),
             "fail_mode": self.config.fail_mode,
             "audit_integrity": integrity.as_dict(),
+            # Isolation de l'état comportemental. `degraded: true` signifie qu'au
+            # moins une fenêtre est partagée faute d'identifiant de session dans
+            # le contexte -- le détecteur observe alors une suite d'actions qui
+            # n'appartient à personne.
+            "session_isolation": self.sessions.stats(),
             "tool_calls_total": len(tool_calls),
             "tool_calls_blocked": len(blocked),
             "prompts_scanned": len(prompt_scans),

@@ -41,6 +41,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
+from aegis_core.personal_data import EventPseudonymizer
 from aegis_core.signing import (
     SIGNATURE_MODE_NONE,
     NullSigner,
@@ -131,6 +132,10 @@ class AuditLog:
             (argument, environnement, `keys/`) via `signing.load_signer`.
         require_signature: refuse de démarrer si aucune clé privée n'est
             disponible, au lieu de retomber silencieusement en mode non signé.
+        pseudonymizer: remplace les données personnelles par des jetons avant
+            écriture (correctif P1-7). `None` active la pseudonymisation avec un
+            coffre en mémoire ; passer `False` la désactive explicitement -- un
+            journal en clair reste possible, mais ce doit être un choix.
     """
 
     def __init__(
@@ -139,8 +144,20 @@ class AuditLog:
         signer: Signer | None = None,
         *,
         require_signature: bool = False,
+        pseudonymizer: EventPseudonymizer | bool | None = None,
     ):
         self.db_path = db_path
+        if pseudonymizer is False:
+            logger.warning(
+                "Pseudonymisation DÉSACTIVÉE : le journal contiendra les données "
+                "personnelles en clair. Un registre immuable rempli de données "
+                "personnelles est en tension avec le droit à l'effacement (RGPD art. 17)."
+            )
+            self._pseudonymizer = None
+        elif pseudonymizer in (None, True):
+            self._pseudonymizer = EventPseudonymizer()
+        else:
+            self._pseudonymizer = pseudonymizer
         self._signer = signer if signer is not None else load_signer(required=require_signature)
         self._conn = sqlite3.connect(db_path)
         self._conn.execute(
@@ -188,8 +205,20 @@ class AuditLog:
         payload = json.dumps({"timestamp": timestamp, "event": event, "prev_hash": prev_hash}, sort_keys=True)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @property
+    def vault(self):
+        """Coffre des données personnelles, ou None si la pseudonymisation est désactivée."""
+        return self._pseudonymizer.vault if self._pseudonymizer else None
+
     def log(self, event: dict[str, object]) -> str:
-        """Ajoute une entrée au journal et renvoie son hash."""
+        """Ajoute une entrée au journal et renvoie son hash.
+
+        L'événement est pseudonymisé AVANT calcul du hash : la chaîne ne couvre
+        donc jamais que des jetons. C'est ce qui permet d'effacer une personne du
+        coffre sans invalider une seule signature (correctif P1-7).
+        """
+        if self._pseudonymizer is not None:
+            event = self._pseudonymizer.pseudonymize(event)
         prev_hash = self._last_hash()
         timestamp = time.time()
         new_hash = self._compute_hash(timestamp, event, prev_hash)

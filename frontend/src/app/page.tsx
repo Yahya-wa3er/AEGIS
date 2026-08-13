@@ -23,10 +23,26 @@ type AuditIntegrity = {
   is_signed: boolean;
 };
 
+// Portée de l'état comportemental. `degraded` vaut vrai quand au moins une
+// fenêtre est partagée faute d'identifiant de session : le détecteur observe
+// alors une suite d'actions qui n'appartient à personne en particulier.
+type SessionIsolation = {
+  keyed_by: string[];
+  active: number;
+  anonymous: number;
+  identified: number;
+  degraded: boolean;
+  evicted: number;
+  expired: number;
+  max_sessions: number;
+  ttl_seconds: number;
+};
+
 type RobustnessReport = {
   detectors: Record<string, DetectorState>;
   fail_mode: string;
   audit_integrity: AuditIntegrity;
+  session_isolation: SessionIsolation;
   tool_calls_total: number;
   tool_calls_blocked: number;
   prompts_scanned: number;
@@ -871,6 +887,34 @@ function AuditIntegrityValue({ report }: { report: RobustnessReport | null }) {
   );
 }
 
+function SessionIsolationValue({ report }: { report: RobustnessReport | null }) {
+  if (!report) return <>—</>;
+  const iso = report.session_isolation;
+  if (!iso) return <>—</>;
+
+  // Une fenêtre comportementale partagée ne produit pas d'erreur : elle produit
+  // un score, et le score a l'air normal. C'est exactement le genre d'état qu'un
+  // tableau de bord doit nommer plutôt que laisser deviner.
+  if (iso.degraded) {
+    return (
+      <span className="text-[#8a6100] text-xl leading-tight whitespace-nowrap">
+        ▲ Partagée
+        <span className="block text-[11px] font-normal normal-case tracking-normal">
+          {iso.anonymous} fenêtre(s) sans identifiant de session
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="text-[#0ca30c] text-xl leading-tight whitespace-nowrap">
+      ✔ Par session
+      <span className="block text-[11px] font-normal normal-case tracking-normal text-[#52514e]">
+        clé : {iso.keyed_by.join(" / ")}
+      </span>
+    </span>
+  );
+}
+
 function Kpis({ report }: { report: RobustnessReport | null }) {
   // Le « Robustness Score » affiché ici était une valeur BINAIRE (100 ou 0),
   // habillée en pourcentage avec une barre de progression animée qui suggérait
@@ -907,6 +951,7 @@ function Kpis({ report }: { report: RobustnessReport | null }) {
       <Kpi label="Anomalies comportementales" value={report ? report.behavior_anomalies_flagged : "—"} />
       <Kpi label="Citations manquantes" value={report ? report.missing_citations : "—"} />
       <Kpi label="Données personnelles masquées" value={report ? report.pii_items_redacted : "—"} />
+      <Kpi label="Isolation des sessions" value={<SessionIsolationValue report={report} />} />
     </section>
   );
 }

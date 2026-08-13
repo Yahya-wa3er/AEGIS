@@ -241,6 +241,51 @@ Le system prompt de `VictimAgent` exige que chaque réponse cite le document uti
 
 `aegis_core/pii_detector.py` masque, dans chaque document RÉCUPÉRÉ ET NON NEUTRALISÉ, les données qui n'ont rien à faire dans un contexte envoyé à un LLM tiers : emails, IBAN, numéros de carte bancaire, numéros de téléphone français, clés d'API. C'est un troisième signal, indépendant des deux autres (`injection_detector.py`, `rag_outlier_detector.py`) : un document parfaitement légitime peut très bien contenir une donnée sensible laissée par erreur -- ce n'est pas une question de confiance envers le document, mais d'hygiène. Uniquement des règles regex, aucun entraînement nécessaire.
 
+## Isolation de l'état par session
+
+La fenêtre comportementale (section 4.4) mémorise les cinq dernières actions pour repérer une séquence anormale. Elle était indexée par **nom d'agent** : tous les utilisateurs de `SupportAgent` partageaient la même. Deux conséquences, ni l'une ni l'autre théorique :
+
+- **dilution** — un attaquant fait passer sa séquence sensible pendant que le trafic légitime remplit la fenêtre ; la suite observée par le détecteur n'est celle de personne, donc rien ne ressort ;
+- **contamination** — symétriquement, les actions d'un utilisateur font monter le score d'un autre. Un signal qui accuse la mauvaise personne coûte plus cher qu'un signal absent.
+
+La clé est désormais `(tenant, agent, session_id)`, lue dans le contexte de la requête (`aegis_core/session.py`) :
+
+```python
+result = agent.handle_request(question, session_id=session, tenant="acme")
+guard.on_session_event(agent.name, trace, result.ctx)
+```
+
+Quand le contexte ne porte pas de `session_id`, AEGIS **ne l'invente pas** — inventer un identifiant donnerait une isolation apparente et fausse, chaque requête ayant sa propre fenêtre et le détecteur n'observant plus jamais de séquence. La clé est marquée anonyme, un avertissement est émis une fois, et `robustness_report()["session_isolation"]` remonte `degraded: true`. Le comportement dégradé est l'ancien, mais il est *visible* : le tableau de bord affiche « ▲ Partagée » au lieu de laisser croire à une isolation qui n'existe pas.
+
+L'état par session est borné dans les deux dimensions : expiration après `ttl_seconds` d'inactivité (30 min par défaut) et plafond `max_sessions` (10 000) avec éviction de la session la moins récente. La clé venant de données contrôlées par le client, un dictionnaire non borné serait un vecteur d'épuisement de ressources — OWASP LLM06, *Unbounded Consumption* : il suffirait d'envoyer des `session_id` tous différents. Évictions et expirations sont comptées et remontées dans le rapport ; un pic d'évictions est un signal d'exploitation, pas une statistique de fonctionnement normal.
+
+Même principe pour l'état **de requête** : les ids de documents neutralisés vivaient dans un attribut d'instance écrasé à chaque `on_retrieval`. Sous deux requêtes concurrentes, la seconde effaçait celui de la première et la vérification de citation portait sur les documents de quelqu'un d'autre. Ils voyagent désormais dans le `ctx` de la requête.
+
+## Journal d'audit et droit à l'effacement (RGPD art. 17)
+
+Le journal d'audit est immuable par construction — c'est ce qui fait sa valeur de preuve. Il journalisait aussi les paramètres d'outils **en clair** : adresses email, corps de messages, identifiants clients. Un registre immuable rempli de données personnelles est en tension directe avec le droit à l'effacement : on ne peut pas supprimer une entrée sans casser la chaîne, donc sans détruire la preuve, et on ne peut pas conserver la donnée sans manquer à l'obligation. C'est la première question que pose le DPO d'un client, et elle n'a pas de bonne réponse une fois le système en production : ça se conçoit au début, ça se rétrofitte très mal.
+
+La séparation (`aegis_core/personal_data.py`) : le journal ne contient plus que des **jetons** — `[EMAIL:pd_3f9a…]` à la place de `m.durand@example.com` —, calculés en HMAC-SHA256 sous une clé dédiée. Les valeurs vivent dans un **coffre séparé** (`PersonalDataVault`, une base distincte), effaçable ligne par ligne.
+
+```
+{'type': 'tool_call', 'tool': 'send_email',
+ 'params': {'to': '[EMAIL:pd_dc4361a918f497c8]', 'body': 'IBAN [IBAN:pd_03637d913f09be9f]'},
+ 'decision': 'block', ...}
+```
+
+La pseudonymisation a lieu **avant** le calcul du hash : la chaîne ne couvre donc jamais que des jetons. Effacer une personne consiste à supprimer ses valeurs du coffre, ce qui ne touche pas une seule entrée du journal — les deux propriétés qui semblaient s'exclure tiennent ensemble :
+
+```python
+vault.erase_value("m.durand@example.com")   # 1 valeur effacée
+log.verify_integrity().ok                   # True — la preuve survit
+```
+
+Le jeton est déterministe (même valeur → même jeton), ce qui permet de corréler des événements sans jamais lire la donnée, et c'est aussi ce qui rend l'effacement possible : on retrouve toutes les occurrences d'une personne à partir de sa valeur.
+
+Configuration : `AEGIS_PERSONAL_DATA_KEY`. Sans elle, une clé éphémère est tirée et un WARNING l'annonce — les jetons ne sont alors pas stables d'une exécution à l'autre, et un effacement ne retrouve pas les occurrences passées. La pseudonymisation est **active par défaut** ; `AuditLog(pseudonymizer=False)` la désactive, avec un avertissement explicite.
+
+Deux limites assumées. Un jeton déterministe reste vulnérable à une attaque par dictionnaire si la clé HMAC fuite (l'espace des adresses email est petit) : la clé doit être traitée comme la clé de signature, idéalement dans un KMS et pas sur le disque à côté du coffre. Et une donnée personnelle qu'aucun motif de `PII_PATTERNS` ne reconnaît — un identifiant métier, un nom propre — passe en clair : c'est la limite du détecteur regex, la même que pour l'assainissement des documents.
+
 ## Lancer la démo
 
 ```bash
@@ -353,7 +398,15 @@ Conséquence visible dans le laboratoire de robustesse du dashboard (`/api/test-
 
 Ce mécanisme dépend entièrement du LLM configuré pour suivre l'instruction du system prompt -- contrairement aux trois détecteurs ML, il n'y a rien à entraîner ni à mesurer hors ligne : sa fiabilité doit être vérifiée avec un vrai modèle (voir `demo.py`). Un modèle qui ignore l'instruction de citation rendrait ce signal muet (aucune citation à vérifier), sans pour autant désactiver les trois autres couches de protection.
 
-Cas limite découvert en conditions réelles (première exécution de `demo.py` avec une vraie clé API) : quand `on_retrieval` neutralise le seul document récupéré (injection détectée), le LLM ne reçoit jamais le vrai contenu -- seulement le message `[CONTENU NEUTRALISÉ PAR AEGIS...]`. Il répond alors honnêtement `[source: aucune]`, ce qui est la bonne réponse, pas une source manquante. La première version de `on_response` comptait quand même ce cas comme `missing_citations` (elle ne comparait `cited` qu'à la liste brute `doc_ids`). Corrigé en faisant retenir à `AegisGuard` les ids neutralisés par le dernier `on_retrieval` (`_last_neutralized_ids`) et en les retirant de `doc_ids` avant de juger la citation dans `on_response` -- un document neutralisé ne compte plus comme une source que le LLM aurait pu citer. Un vrai document non neutralisé mais non cité reste, lui, correctement signalé (voir `tests/test_middleware.py`).
+Cas limite découvert en conditions réelles (première exécution de `demo.py` avec une vraie clé API) : quand `on_retrieval` neutralise le seul document récupéré (injection détectée), le LLM ne reçoit jamais le vrai contenu -- seulement le message `[CONTENU NEUTRALISÉ PAR AEGIS...]`. Il répond alors honnêtement `[source: aucune]`, ce qui est la bonne réponse, pas une source manquante. La première version de `on_response` comptait quand même ce cas comme `missing_citations` (elle ne comparait `cited` qu'à la liste brute `doc_ids`). Corrigé en faisant déposer par `on_retrieval` les ids neutralisés **dans le contexte de la requête** (`ctx["_aegis_neutralized_ids"]`), que `on_response` relit pour les retirer de `doc_ids` avant de juger la citation -- un document neutralisé ne compte plus comme une source que le LLM aurait pu citer. Un vrai document non neutralisé mais non cité reste, lui, correctement signalé (voir `tests/test_middleware.py`).
+
+### Isolation par session (lot 4B)
+
+L'isolation ne vaut que si l'orchestrateur fournit un `session_id`. AEGIS ne peut pas le déduire : sans lui, la fenêtre reste partagée entre tous les appelants du même agent. La seule chose qu'AEGIS garantit, c'est de le **dire** (`session_isolation.degraded`) plutôt que de laisser croire à une isolation qui n'existe pas.
+
+Le plafond de sessions protège la mémoire, pas la détection : sous une charge d'identifiants jetables, les sessions légitimes les moins récentes sont évincées et leur fenêtre comportementale repart à zéro. Un attaquant qui sait cela peut donc, au prix d'un trafic soutenu, effacer la mémoire comportementale d'une session ciblée — le pic d'évictions est compté et remonté, mais rien ne le bloque aujourd'hui. Une limitation de débit par locataire (LLM06) est le vrai correctif ; elle n'existe pas encore.
+
+Enfin, l'isolation porte sur l'état comportemental et l'état de requête. L'index RAG, lui, reste commun à tous les locataires (voir LLM09).
 
 ### Assainissement des documents / PII (section 4.5)
 
@@ -367,15 +420,15 @@ Le tableau ci-dessous est une évaluation honnête de ce qui est réellement cou
 
 | # | Risque 2026 | Couverture | Ce qui manque |
 |---|---|---|---|
-| LLM01 | Prompt Injection *(étendu au cross-modal)* | ⚠️ partielle | Indirecte via documents seulement. Règles francophones, contournées par l'anglais, l'Unicode et l'encodage. La requête utilisateur et les retours d'outils ne sont pas scannés. Rien en cross-modal. |
-| LLM02 | Sensitive Information Disclosure | ⚠️ entrée seulement | PII masquée dans les documents récupérés. **Aucun filtre de sortie.** |
+| LLM01 | Prompt Injection *(étendu au cross-modal)* | ⚠️ partielle | Directe (requête), indirecte (documents) et de second ordre (retours d'outils) désormais scannées, sur les vues normalisées (Unicode, encodage, balisage). Reste : règles francophones, contournables par l'anglais ; rien en cross-modal. |
+| LLM02 | Sensitive Information Disclosure | ⚠️ entrée et journal | PII masquée dans les documents récupérés ; journal d'audit pseudonymisé avec coffre séparé et effaçable (RGPD art. 17). **Aucun filtre de sortie.** |
 | LLM03 | **Excessive Agency** *(6ᵉ → 3ᵉ)* | ⚠️ partielle | Allow-list deny-by-default : la bonne base, et l'atout principal du projet. Manque : `sensitive_tools` sans effet, plafond de montant contournable par typage, pas de liste blanche de destinataires, pas de validation humaine, pas de quota. |
 | LLM04 | Supply Chain *(3ᵉ → 4ᵉ)* | ⚠️ partielle | Plus de chargement pickle, dépendances figées, artefacts vérifiés par SHA-256. Manque : SBOM, signature du bundle de modèles, provenance. |
 | LLM05 | Data and Model Poisoning | ⚠️ partielle | Détection d'outliers à la récupération. Rien à l'indexation, aucune provenance ni signature de document. |
-| LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | 🔴 absente | Pas de budget de jetons, pas de plafond de coût, pas de limitation de débit, pas de borne sur les boucles d'agent. Les endpoints de démo déclenchent de vrais appels LLM sans authentification. |
+| LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | 🔴 quasi absente | Seul l'état par session est borné (expiration + plafond avec éviction), ce qui ferme un vecteur : des `session_id` jetables ne font plus croître la mémoire sans limite. Manque tout le reste : budget de jetons, plafond de coût, limitation de débit, borne sur les boucles d'agent. Les endpoints de démo déclenchent de vrais appels LLM sans authentification. |
 | LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ amorce | La vérification de citation est la bonne intuition. Manque la vérification d'ancrage : la réponse est-elle réellement *soutenue* par la source citée ? |
 | LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
-| LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF. Pas de contrôle d'accès sur l'index, pas d'isolation multi-locataires. |
+| LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire à la récupération. |
 | LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | 🔴 absente | Les retours d'outils et la réponse finale traversent sans validation. Le frontend échappe correctement (React, pas de `dangerouslySetInnerHTML`), mais c'est le seul rempart et il est côté client. |
 
 Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py` étaient ceux de l'édition **2023** sous un en-tête « 2025 » (`LLM06 Sensitive Information Disclosure`, `LLM08 Excessive Agency`). Corrigé — voir la table de correspondance en tête de ce fichier.
@@ -388,7 +441,8 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Analyse de la requête utilisateur (`on_prompt`) | ✅ Lot 3C — règles bloquantes, ML observé |
 | Analyse des retours d'outils (`on_tool_result`) | ✅ Lot 3C — neutralisation + masquage PII |
 | Détection d'injection | ✅ V0 heuristique (regex) + Phase 2 ML (DistilBERT multilingue fine-tuné, ensemble regex+ML) -- voir "Limites connues" |
-| Journal d'audit signé | ✅ SQLite + chaînage SHA-256 -- Postgres + signatures Ed25519 en V1 |
+| Journal d'audit signé | ✅ SQLite + chaînage SHA-256 + signatures Ed25519 par entrée, triggers SQLite append-only, pseudonymisation et coffre effaçable (RGPD art. 17) -- Postgres en V1 |
+| Isolation de l'état par session | ✅ Lot 4B — clé `(tenant, agent, session_id)`, bornée en taille et dans le temps, dégradation déclarée |
 | Détection d'anomalies comportementales (VAE) | ✅ Phase 2 (Beta-VAE, détection partielle sur cas limites -- voir "Limites connues") |
 | Durcissement RAG (filtre PII/secrets, outliers embeddings) | ✅ Phase 3 : outliers d'embeddings (TF-IDF, voir limites) + citation obligatoire + assainissement PII/secrets par regex (voir limites) |
 | Red-teaming automatisé | ✅ V0 fonctionnelle, corpus enrichi (10 contrôles bénins diversifiés) |

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-
+import uuid
 from pathlib import Path
 
 from aegis_core.audit_log import GENESIS_HASH
@@ -112,12 +112,14 @@ def run_protected() -> None:
             on_prompt=guard.on_prompt,
             on_tool_result=guard.on_tool_result,
         )
-    result = agent.handle_request(USER_QUERY)
+    result = agent.handle_request(USER_QUERY, session_id=uuid.uuid4().hex)
     print_trace(result.trace)
     print(f"\n  Réponse renvoyée au client : {result.response}")
 
     trace_as_dicts = [{"step": s.step, "detail": s.detail} for s in result.trace]
-    behavior_scan = guard.on_session_event(agent.name, trace_as_dicts)
+    # `result.ctx` porte le session_id : la fenêtre comportementale est ainsi
+    # indexée par session, pas par nom d'agent (voir aegis_core.session).
+    behavior_scan = guard.on_session_event(agent.name, trace_as_dicts, result.ctx)
     print(
         f"\n  Scan comportemental (section 4.4) : risque={behavior_scan.risk:.2f} "
         f"flagged={behavior_scan.flagged} (erreur brute={behavior_scan.raw_error:.2f}, "

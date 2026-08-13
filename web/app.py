@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -218,7 +219,10 @@ def simulate(mode: str) -> SimulationResult:
         guard = None
         agent = VictimAgent()
 
-    result = agent.handle_request(USER_QUERY)
+    # Un identifiant de session par requête : c'est lui qui isole la fenêtre
+    # comportementale (voir aegis_core.session). Sans lui, le rapport
+    # afficherait `session_isolation.degraded = true`, à juste titre.
+    result = agent.handle_request(USER_QUERY, session_id=uuid.uuid4().hex)
     trace_as_dicts = [{"step": s.step, "detail": s.detail} for s in result.trace]
 
     executed = [{"tool": a.tool, "params": a.params} for a in tools.EXECUTED_ACTIONS]
@@ -233,7 +237,7 @@ def simulate(mode: str) -> SimulationResult:
         # de l'agent -- une seule requête ne donne qu'un signal faible (la fenêtre se
         # remplit de "no_action" au départ), mais c'est le même point d'intégration
         # qui, dans un vrai déploiement, verrait défiler des dizaines de requêtes.
-        scan = guard.on_session_event(agent.name, trace_as_dicts)
+        scan = guard.on_session_event(agent.name, trace_as_dicts, result.ctx)
         behavior_scan = {"risk": scan.risk, "flagged": scan.flagged, "raw_error": scan.raw_error}
         audit_log = [{"id": e.id, "hash": e.hash[:12], "event": e.event} for e in guard.audit_log.all_entries()]
         report = guard.robustness_report()
@@ -298,7 +302,9 @@ def test_document(req: TestDocumentRequest) -> TestDocumentResult:
         guard = None
         agent = VictimAgent()
 
-    result = agent.handle_request(TEST_DOCUMENT_QUERY, documents=[document])
+    result = agent.handle_request(
+        TEST_DOCUMENT_QUERY, documents=[document], session_id=uuid.uuid4().hex
+    )
     trace_as_dicts = [{"step": s.step, "detail": s.detail} for s in result.trace]
 
     executed = [{"tool": a.tool, "params": a.params} for a in tools.EXECUTED_ACTIONS]
@@ -309,7 +315,7 @@ def test_document(req: TestDocumentRequest) -> TestDocumentResult:
     report = None
     behavior_scan = None
     if guard is not None:
-        scan = guard.on_session_event(agent.name, trace_as_dicts)
+        scan = guard.on_session_event(agent.name, trace_as_dicts, result.ctx)
         behavior_scan = {"risk": scan.risk, "flagged": scan.flagged, "raw_error": scan.raw_error}
         audit_log = [{"id": e.id, "hash": e.hash[:12], "event": e.event} for e in guard.audit_log.all_entries()]
         report = guard.robustness_report()

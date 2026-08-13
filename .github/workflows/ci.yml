@@ -117,6 +117,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # `LayoutProps<"/">` et consorts sont des types GÉNÉRÉS par Next dans
+      # `.next/types`, que `tsconfig.json` inclut. Sur un clone frais ce
+      # répertoire n'existe pas, et `tsc` échouait avant même de regarder le code
+      # (« Cannot find name 'LayoutProps' »). Un poste de dev ne le voyait pas :
+      # il avait déjà lancé `next dev` ou `next build` au moins une fois.
+      - name: Générer les types de routes
+        working-directory: frontend
+        run: npx next typegen
+
       - name: Vérification des types
         working-directory: frontend
         run: npx tsc --noEmit -p tsconfig.json
