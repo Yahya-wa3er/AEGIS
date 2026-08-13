@@ -197,6 +197,28 @@ python -m pytest -q
 
 ## Limites connues
 
+### Détection d'injection : ce qui est couvert, et ce qui ne l'est pas
+
+**Règles (couche 1).** Bilingues français/anglais, appliquées à un texte normalisé (`aegis_core/normalization.py`) : suppression des caractères invisibles et des contrôles bidi, NFKC, repliement des homoglyphes cyrilliques et grecs, recollage de l'espacement, décodage des blocs base64, extraction du contenu des commentaires de balisage.
+
+Mesure sur les dix contournements identifiés lors de l'audit du 12/08/2026, **couche de règles seule, sans classifieur ML** (l'état d'un clone frais) :
+
+| | Avant | Après |
+|---|---|---|
+| Contournements détectés | 0/10 | **10/10** |
+| Faux positifs sur 10 documents bénins variés | 2/10 | **0/10** |
+| Taux de blocage du corpus de red-teaming | 67 % (2/3) | **100 % (12/12)** |
+
+Les deux faux positifs venaient de la règle `<!--.*-->`, qui signalait *tout* commentaire HTML — intenable dès qu'un corpus RAG contient du HTML ou du Markdown exporté. Le commentaire n'est plus le signal : son **contenu** est analysé comme une vue à part, et la dissimulation devient une méta-règle (`evasion.hidden_in_markup`) qui s'ajoute à l'instruction détectée. Un texte anodin ne s'obfusque pas : le fait de cacher est souvent un signal plus fiable que ce qui est caché.
+
+**Ce que les règles ne feront jamais.** Une paraphrase qu'aucun motif n'anticipe reste invisible, par construction. C'est le rôle du classifieur ML, et c'est pourquoi les deux couches coexistent plutôt que de se remplacer.
+
+**Le seuil de recollage de l'espacement** (trois lettres) a été vérifié sur 413 textes français réels du dépôt : zéro recollage indésirable. Une normalisation qui abîme le texte légitime déplacerait le problème au lieu de le résoudre.
+
+**Précaution de méthode.** Les neuf variantes d'obfuscation ont été ajoutées au corpus de red-teaming *après* le correctif. Un corpus construit sur les cas qu'on vient de faire passer ne mesure plus rien — ici le correctif est une normalisation générique, aucune règle ne cible un payload en particulier, et leur rôle est d'empêcher la régression. Le score sur 12 attaques reste par ailleurs statistiquement faible : voir la limite ci-dessous.
+
+**Ce corpus est trop petit.** Douze attaques, dix contrôles. Chaque payload pèse 8 points de recall. Un vrai benchmark demande des centaines de cas issus de corpus publics (AgentDojo, garak, PyRIT, `deepset/prompt-injections`) — c'est le prochain chantier de mesure, et tant qu'il n'est pas fait, le « Robustness Score » doit être lu comme un garde-fou de non-régression, pas comme une mesure de robustesse.
+
 ### Classifieur ML d'injection (section 4.2)
 
 Le classifieur ML (DistilBERT multilingue fine-tuné) apprend une corrélation de surface : le ton formel/impératif en français est associé au risque d'injection, car le corpus d'entraînement synthétique n'a exposé le modèle qu'à des messages client conversationnels comme exemples bénins -- jamais à du texte formel bénin (RGPD, documentation technique, notes internes).
