@@ -92,10 +92,23 @@ def main() -> int:
     ro_block = sum(r.flagged for r in ro_attacks) / len(ro_attacks) if ro_attacks else 1.0
     ro_fp = sum(r.flagged for r in ro_controls) / len(ro_controls) if ro_controls else 0.0
 
+    # Troisième mesure : ce que fait RÉELLEMENT le pipeline, avec sa politique de
+    # blocage. Les deux lignes précédentes mesurent des détecteurs isolés ; celle-ci
+    # mesure la décision qui est effectivement prise sur un document.
+    from aegis_core.middleware import AegisGuard
+
+    guard = AegisGuard()
+    pipe_attacks = [p for p in PAYLOADS if p.in_scope_v0 and p.is_attack]
+    pipe_controls = [p for p in PAYLOADS if p.in_scope_v0 and not p.is_attack]
+    pipe_block = sum(guard._content_verdict(p.content)[0] for p in pipe_attacks) / len(pipe_attacks) if pipe_attacks else 1.0
+    pipe_fp = sum(guard._content_verdict(p.content)[0] for p in pipe_controls) / len(pipe_controls) if pipe_controls else 0.0
+
     print("-" * 72)
     print("Comparaison par couche (blocage / faux positifs) :")
     print(f"  Règles seules      : {ro_block:.0%} / {ro_fp:.0%}")
     print(f"  Règles + ML        : {block_rate:.0%} / {false_positive_rate:.0%}")
+    print(f"  Pipeline réel      : {pipe_block:.0%} / {pipe_fp:.0%}"
+          "   <-- décision effectivement appliquée aux documents")
     if false_positive_rate > ro_fp:
         print("  --> Les faux positifs viennent du classifieur ML, pas des règles.")
         print("      Voir 'Limites connues' du README : biais de registre du corpus d'entraînement.")

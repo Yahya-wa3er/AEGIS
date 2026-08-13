@@ -21,6 +21,36 @@ rôle de `required_detectors` : chaque détecteur qui y figure doit être
 opérationnel, sinon `AegisGuard` refuse de démarrer -- **au démarrage**, pas
 silencieusement à la première requête, quand il est déjà trop tard.
 
+Quels signaux ont le droit de bloquer
+------------------------------------
+Les trois signaux de contenu n'ont pas la même nature, et les traiter à
+l'identique était une erreur mesurable.
+
+Les **règles** sont déterministes et explicables. Mesure sur le corpus de
+contrôle : 100 % de blocage des attaques, **0 %** de faux positifs.
+
+Le **classifieur ML** et le **détecteur d'outliers** sont probabilistes. Mesure
+sur le même corpus : **50 % de faux positifs chacun** -- un document légitime sur
+deux neutralisé. Un rapport financier, un bulletin météo, une note RGPD, de la
+documentation d'API.
+
+`blocking_signals` ne contient donc que `rules` par défaut. Les deux autres
+continuent de tourner, leur score est journalisé et affiché, et le journal
+compte les cas où ils **auraient** bloqué (`would_have_blocked`) -- mais ils ne
+neutralisent rien seuls.
+
+Ce n'est pas une mise au rebut. Le corpus actuel ne peut pas mesurer ce que le
+ML apporte vraiment : sa valeur est de généraliser à des formulations qu'aucune
+règle n'anticipe, et douze payloads calibrés sur les règles ne testent pas cela.
+Le compteur `would_have_blocked` est précisément ce qui permettra de lui rendre
+le pouvoir de bloquer -- le jour où il montrera des détections que les règles
+ratent, avec des chiffres plutôt qu'une intuition.
+
+Un opérateur qui a mesuré son propre taux de faux positifs sur SON corpus peut
+évidemment décider autrement :
+
+    AegisConfig(blocking_signals=frozenset({"rules", "rag_outlier"}))
+
 Choix de conception : `required_detectors` est **vide par défaut**. Rien ne
 bloque tant que tu n'as pas déclaré ce que tu exiges. On obtient la sémantique
 fail-closed là où elle est demandée, sans transformer un `git clone` en mur.
@@ -44,6 +74,15 @@ ALL_DETECTORS: frozenset[str] = frozenset(
     {DETECTOR_INJECTION_ML, DETECTOR_RAG_OUTLIER, DETECTOR_BEHAVIOR}
 )
 
+# Signaux capables de DÉCIDER un blocage. Les autres continuent de tourner et
+# d'être journalisés, mais ne neutralisent rien -- ils informent.
+SIGNAL_RULES = "rules"                # règles déterministes, explicables
+SIGNAL_INJECTION_ML = "injection_ml"  # classifieur DistilBERT
+SIGNAL_RAG_OUTLIER = "rag_outlier"    # distance au domaine documentaire
+
+ALL_SIGNALS: frozenset[str] = frozenset({SIGNAL_RULES, SIGNAL_INJECTION_ML, SIGNAL_RAG_OUTLIER})
+
+ENV_BLOCKING_SIGNALS = "AEGIS_BLOCKING_SIGNALS"
 ENV_REQUIRED_DETECTORS = "AEGIS_REQUIRED_DETECTORS"
 ENV_AUDIT_DB = "AEGIS_AUDIT_DB"
 ENV_REQUIRE_SIGNED_AUDIT = "AEGIS_REQUIRE_SIGNED_AUDIT"
@@ -72,6 +111,8 @@ class AegisConfig:
             automatique (voir `aegis_core.signing.load_signer`).
     """
 
+    # Par défaut, SEULES les règles déterministes bloquent (voir la note plus bas).
+    blocking_signals: frozenset[str] = field(default_factory=lambda: frozenset({SIGNAL_RULES}))
     required_detectors: frozenset[str] = field(default_factory=frozenset)
     audit_db_path: str = ":memory:"
     require_signed_audit: bool = False
@@ -85,6 +126,15 @@ class AegisConfig:
                 f"Détecteur(s) inconnu(s) dans required_detectors : {sorted(unknown)}. "
                 f"Valeurs acceptées : {sorted(ALL_DETECTORS)}."
             )
+        unknown_signals = set(self.blocking_signals) - ALL_SIGNALS
+        if unknown_signals:
+            raise ValueError(
+                f"Signal(aux) inconnu(s) dans blocking_signals : {sorted(unknown_signals)}. "
+                f"Valeurs acceptées : {sorted(ALL_SIGNALS)}."
+            )
+
+    def blocks(self, signal: str) -> bool:
+        return signal in self.blocking_signals
 
     @property
     def fail_mode(self) -> str:
@@ -99,13 +149,17 @@ class AegisConfig:
     def from_env(cls) -> AegisConfig:
         """Construit la configuration depuis l'environnement.
 
+            AEGIS_BLOCKING_SIGNALS=rules,rag_outlier
             AEGIS_REQUIRED_DETECTORS=rag_outlier,behavior
             AEGIS_AUDIT_DB=/var/lib/aegis/audit.db
             AEGIS_REQUIRE_SIGNED_AUDIT=1
         """
         raw = os.getenv(ENV_REQUIRED_DETECTORS, "")
         required = frozenset(name.strip() for name in raw.split(",") if name.strip())
+        raw_signals = os.getenv(ENV_BLOCKING_SIGNALS, "")
+        signals = frozenset(name.strip() for name in raw_signals.split(",") if name.strip())
         return cls(
+            blocking_signals=signals or frozenset({SIGNAL_RULES}),
             required_detectors=required,
             audit_db_path=os.getenv(ENV_AUDIT_DB, ":memory:"),
             require_signed_audit=os.getenv(ENV_REQUIRE_SIGNED_AUDIT, "").lower() in _TRUTHY,

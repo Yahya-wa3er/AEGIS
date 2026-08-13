@@ -35,6 +35,7 @@ type RobustnessReport = {
   tool_results_flagged: number;
   retrievals_scanned: number;
   retrievals_flagged: number;
+  retrievals_advisory_only: number;
   behavior_scans: number;
   behavior_anomalies_flagged: number;
   citation_checks: number;
@@ -142,6 +143,8 @@ type DocumentAnalysis = {
   outlier_distance: number | null;
   overall_risk: number;
   neutralized: boolean;
+  advisory_signals: string[];
+  blocking_signals: string[];
   pii_redacted: boolean;
   pii_categories: string[];
   pii_count: number;
@@ -381,6 +384,11 @@ function DocumentVerdict({ result }: { result: DocumentAnalysis }) {
         >
           {result.neutralized ? "⚠ Aurait été neutralisé par AEGIS" : "✔ Jugé sûr par AEGIS"}
         </span>
+        {!result.neutralized && result.advisory_signals.length > 0 && (
+          <span className="text-xs font-semibold px-3 py-1 rounded-full text-[#8a6100] bg-[#fab219]/20">
+            ▲ signal consultatif : {result.advisory_signals.join(", ")}
+          </span>
+        )}
         {result.truncated && (
           <span className="text-xs text-[#898781]">(texte tronqué à 20 000 caractères pour l&apos;analyse)</span>
         )}
@@ -414,6 +422,13 @@ function DocumentVerdict({ result }: { result: DocumentAnalysis }) {
           </div>
         </div>
       </div>
+      {!result.neutralized && result.advisory_signals.length > 0 && (
+        <p className="text-xs text-[#8a6100] mt-3">
+          Un signal probabiliste a réagi à ce document, mais il n&apos;a pas le pouvoir de
+          neutraliser seul : mesuré sur le corpus de contrôle, il se trompe une fois sur deux.
+          Il est journalisé pour pouvoir un jour lui rendre ce pouvoir — avec des chiffres.
+        </p>
+      )}
       <p className="text-xs text-[#898781] mt-3.5 border-t border-black/[0.08] pt-3">
         Aperçu du texte analysé : « {result.content_preview.slice(0, 140)}
         {result.content_preview.length > 140 ? "…" : ""} »
@@ -704,7 +719,10 @@ function ProtectionLayers({ report }: { report: RobustnessReport | null }) {
       label: "Détection d'injection & outliers RAG",
       tone: "alert",
       active: !!report && report.retrievals_flagged > 0,
-      idle: "Aucun document suspect reçu",
+      idle:
+        report && report.retrievals_advisory_only > 0
+          ? `Aucun document neutralisé (${report.retrievals_advisory_only} signal(aux) consultatif(s) journalisé(s))`
+          : "Aucun document suspect reçu",
       hit: `${report?.retrievals_flagged ?? 0} document(s) neutralisé(s)`,
       dependsOn: ["injection_ml", "rag_outlier"],
       hasFallback: true, // les règles regex tournent toujours

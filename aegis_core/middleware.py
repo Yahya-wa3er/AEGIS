@@ -55,6 +55,9 @@ from aegis_core.config import (
     DETECTOR_BEHAVIOR,
     DETECTOR_INJECTION_ML,
     DETECTOR_RAG_OUTLIER,
+    SIGNAL_INJECTION_ML,
+    SIGNAL_RAG_OUTLIER,
+    SIGNAL_RULES,
     AegisConfig,
     DetectorUnavailableError,
 )
@@ -226,43 +229,81 @@ class AegisGuard:
                 "AegisConfig.required_detectors si tu acceptes de tourner sans."
             )
 
-    def on_retrieval(self, chunks: list[RetrievedChunk], ctx: dict[str, object]) -> list[RetrievedChunk]:
-        """Scanne chaque chunk récupéré avec DEUX signaux indépendants (section 4.5) :
-        le contenu (regex + ML, `injection_detector`) et le sens global du document
-        comparé au domaine normal (`rag_outlier_detector`). Neutralise si l'un OU
-        l'autre est déclenché -- ce sont deux façons différentes qu'un document ait
-        de "sonner faux", pas deux votes sur le même signal.
+    def _content_verdict(self, text: str) -> tuple[bool, dict[str, object]]:
+        """Croise les trois signaux de contenu et dit lequel a le droit de décider.
 
-        Un chunk qui n'est PAS neutralisé passe ensuite par un troisième signal,
-        indépendant des deux premiers : `pii_detector` masque les données
-        personnelles/secrets qu'il pourrait contenir (un document légitime n'est
-        pas exempt de ce risque -- voir docstring du module).
+        Les trois n'ont pas la même nature. Les **règles** sont déterministes et
+        mesurées à 0 % de faux positifs. Le **classifieur ML** et le **détecteur
+        d'outliers** sont probabilistes et mesurés à 50 % chacun sur le même
+        corpus de contrôle : un document légitime sur deux neutralisé -- un
+        rapport financier, un bulletin météo, une note RGPD.
+
+        Les traiter à l'identique par un `or` était donc une erreur mesurable :
+        le maillon le plus bruyant décidait pour tout le monde. Seuls les signaux
+        listés dans `AegisConfig.blocking_signals` bloquent désormais ; les autres
+        tournent, sont journalisés, et alimentent un compteur `would_have_blocked`
+        qui documente ce qu'ils auraient fait.
+
+        Retourne `(bloque, details)` -- `details` part tel quel dans le journal.
+        """
+        injection = self.injection_detector.scan(text)
+        outlier = self.rag_outlier_detector.score(text)
+
+        fired = {
+            SIGNAL_RULES: bool(injection.matched_rules),
+            # Le ML ne "tire" ici que s'il flague SANS qu'une règle l'ait déjà
+            # fait : sinon on compterait deux fois la même détection.
+            SIGNAL_INJECTION_ML: bool(
+                injection.ml_score is not None and injection.flagged and not injection.matched_rules
+            ),
+            SIGNAL_RAG_OUTLIER: bool(outlier.flagged),
+        }
+
+        blocking = sorted(name for name, hit in fired.items() if hit and self.config.blocks(name))
+        advisory = sorted(name for name, hit in fired.items() if hit and not self.config.blocks(name))
+
+        details = {
+            "risk": max(injection.rule_risk, injection.ml_score or 0.0, outlier.risk),
+            "rule_risk": injection.rule_risk,
+            "injection_ml_score": injection.ml_score,
+            "outlier_risk": outlier.risk,
+            "outlier_distance": outlier.distance,
+            "matched_rules": list(injection.matched_rules),
+            "blocking_signals": blocking,
+            # Ce que les signaux consultatifs AURAIENT fait. C'est ce compteur qui
+            # permettra un jour de leur rendre le pouvoir de bloquer, avec des
+            # chiffres plutôt qu'une intuition.
+            "advisory_signals": advisory,
+            "would_have_blocked": bool(advisory) and not blocking,
+        }
+        return bool(blocking), details
+
+    def on_retrieval(self, chunks: list[RetrievedChunk], ctx: dict[str, object]) -> list[RetrievedChunk]:
+        """Scanne chaque chunk récupéré avec trois signaux indépendants (section 4.5) :
+        les règles de contenu, le classifieur ML, et l'éloignement sémantique du
+        domaine normal. Seuls les signaux habilités neutralisent (voir
+        `_content_verdict`) ; les autres informent.
+
+        Un chunk qui n'est PAS neutralisé passe ensuite par `pii_detector`, qui
+        masque les données personnelles qu'il pourrait contenir -- un document
+        légitime n'est pas exempt de ce risque.
         """
         safe_chunks: list[RetrievedChunk] = []
         self._last_neutralized_ids = set()
         for chunk in chunks:
-            injection_scan = self.injection_detector.scan(chunk.content)
-            outlier_scan = self.rag_outlier_detector.score(chunk.content)
-            risk = max(injection_scan.risk, outlier_scan.risk)
-            flagged = injection_scan.flagged or outlier_scan.flagged
+            blocked, details = self._content_verdict(chunk.content)
 
             self.audit_log.log({
                 "type": "retrieval_scan",
                 "agent": ctx.get("agent"),
                 "doc_id": chunk.id,
-                "risk": risk,
-                "flagged": flagged,
-                # Identifiants de règles, pas les motifs bruts : ces entrées
-                # sortent vers l'API et le tableau de bord (correctif P1-9e).
-                "matched_rules": list(injection_scan.matched_rules),
-                "injection_risk": injection_scan.risk,
-                "outlier_risk": outlier_scan.risk,
-                "outlier_distance": outlier_scan.distance,
+                "flagged": blocked,
+                **details,
             })
 
-            if flagged:
+            if blocked:
                 self._last_neutralized_ids.add(chunk.id)
-                safe_chunks.append(_Neutralized(chunk.id, risk))
+                safe_chunks.append(_Neutralized(chunk.id, float(details["risk"])))
                 continue
 
             pii_scan = self.pii_detector.scan(chunk.content)
@@ -449,6 +490,9 @@ class AegisGuard:
         blocked = [e for e in tool_calls if e.event["decision"] == "block"]
         retrievals = [e for e in entries if e.event["type"] == "retrieval_scan"]
         flagged = [e for e in retrievals if e.event["flagged"]]
+        # Documents qu'un signal consultatif aurait neutralisés s'il avait eu le
+        # droit de décider. C'est le chiffre à surveiller avant de le lui rendre.
+        advisory = [e for e in retrievals if e.event.get("would_have_blocked")]
         behavior_scans = [e for e in entries if e.event["type"] == "behavior_scan"]
         behavior_flagged = [e for e in behavior_scans if e.event["flagged"]]
         prompt_scans = [e for e in entries if e.event["type"] == "prompt_scan"]
@@ -474,6 +518,7 @@ class AegisGuard:
             "tool_results_flagged": len(tool_results_flagged),
             "retrievals_scanned": len(retrievals),
             "retrievals_flagged": len(flagged),
+            "retrievals_advisory_only": len(advisory),
             "behavior_scans": len(behavior_scans),
             "behavior_anomalies_flagged": len(behavior_flagged),
             "citation_checks": len(citation_checks),

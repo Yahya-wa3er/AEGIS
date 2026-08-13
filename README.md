@@ -68,6 +68,45 @@ Trois couches, du plus faible au plus fort : le **chaînage de hachage** attrape
 
 La clé privée est exclue du dépôt par `.gitignore`. Ne la regénère pas sans archiver le journal qu'elle signait : toutes les signatures existantes deviendraient invalides, ce qui est indiscernable d'une falsification.
 
+## Quels signaux ont le droit de bloquer
+
+Les trois signaux de contenu n'ont pas la même nature, et les traiter à l'identique par un `or` était une erreur mesurable : le maillon le plus bruyant décidait pour tout le monde.
+
+| Signal | Nature | Blocage / faux positifs mesurés |
+|---|---|---|
+| Règles | déterministe, explicable | **100 % / 0 %** |
+| Classifieur ML | probabiliste | 100 % / **50 %** |
+| Outliers RAG | probabiliste | — / **50 %** |
+
+Les 50 % ne sont pas une estimation : cinq des dix documents de contrôle du corpus de red-teaming sont signalés à tort par chacun de ces deux détecteurs — un rapport financier, un bulletin météo, de la documentation d'API, une note RH, une mention RGPD.
+
+`AegisConfig.blocking_signals` ne contient donc que `rules` par défaut. Les deux autres continuent de tourner, leur score est journalisé et affiché, et le journal compte les cas où ils **auraient** bloqué :
+
+```
+Comparaison par couche (blocage / faux positifs) :
+  Règles seules      : 100% / 0%
+  Règles + ML        : 100% / 50%
+  Pipeline réel      : 100% / 0%   <-- décision effectivement appliquée aux documents
+```
+
+**Ce n'est pas une mise au rebut.** Le corpus actuel ne peut pas mesurer ce que le classifieur apporte vraiment : sa valeur est de généraliser à des formulations qu'aucune règle n'anticipe, et douze payloads calibrés sur les règles ne testent pas cela. Le compteur `would_have_blocked` est précisément ce qui permettra de lui rendre le pouvoir de bloquer — le jour où il montrera des détections que les règles ratent, avec des chiffres plutôt qu'une intuition.
+
+Un opérateur qui a mesuré son propre taux de faux positifs sur *son* corpus décide autrement s'il le souhaite :
+
+```python
+AegisConfig(blocking_signals=frozenset({"rules", "rag_outlier"}))
+```
+
+```bash
+export AEGIS_BLOCKING_SIGNALS=rules,rag_outlier
+```
+
+### Une mesure qui disait l'inverse de ce qu'elle semblait dire
+
+Le README annonçait *« 0 faux positif sur le normal (0/30) »* pour le détecteur d'outliers. Ce n'était pas faux, c'était mal mesuré : les trente documents « normaux » viennent de `generate_rag_corpus.py`, **le même générateur que le corpus d'entraînement**. Le détecteur était évalué sur sa propre distribution. Sur du français légitime réellement varié, il se trompe une fois sur deux.
+
+Un test le disait aussi, dans l'autre sens : `test_on_retrieval_neutralizes_outlier_even_without_injection_pattern` vérifiait qu'une mention RGPD parfaitement légitime était neutralisée, sous le titre « démontre l'apport du détecteur d'outliers ». Ce n'était pas une détection, c'était un faux positif célébré comme une fonctionnalité. Le test a été réécrit pour vérifier l'inverse.
+
 ## Mode de défaillance : fail-open par défaut, fail-closed sur demande
 
 Quand un détecteur ML n'a pas de modèle entraîné, il renvoie `risk=0.0` sur tout, avec un WARNING. C'est un comportement **fail-open** — la version précédente de ce README l'appelait « fail-safe », ce qui est l'exact opposé.

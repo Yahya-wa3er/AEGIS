@@ -60,6 +60,14 @@ MAX_DOCUMENT_CHARS = 20_000
 _injection_detector = InjectionDetector()
 _rag_outlier_detector = RagOutlierDetector()
 _pii_detector = PiiDetector()
+# Garde partagé, utilisé UNIQUEMENT pour son arbitrage de signaux : il donne à
+# `/api/analyze-document` exactement la même logique de décision que le pipeline
+# de production, sans dupliquer la règle à deux endroits.
+_verdict_guard = AegisGuard(
+    injection_detector=_injection_detector,
+    rag_outlier_detector=_rag_outlier_detector,
+    pii_detector=_pii_detector,
+)
 
 # Laboratoire de robustesse (/api/test-document) : réutilise le corpus déjà
 # catégorisé OWASP LLM Top 10 du red-teaming (redteam/payloads.py) plutôt que
@@ -92,6 +100,12 @@ class AnalyzeDocumentResult(BaseModel):
     outlier_distance: float | None
     overall_risk: float
     neutralized: bool
+    # Signaux qui ont tiré sans avoir le droit de décider. Les afficher permet
+    # au visiteur de voir ce que le système "pense" sans confondre ça avec ce
+    # qu'il fait -- et de comprendre pourquoi un document hors-sujet mais
+    # légitime n'est PAS bloqué.
+    advisory_signals: list[str]
+    blocking_signals: list[str]
     pii_redacted: bool
     pii_categories: list[str]
     pii_count: int
@@ -337,8 +351,12 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
     injection_scan = _injection_detector.scan(content)
     outlier_scan = _rag_outlier_detector.score(content)
     pii_scan = _pii_detector.scan(content)
-    risk = max(injection_scan.risk, outlier_scan.risk)
-    flagged = injection_scan.flagged or outlier_scan.flagged
+    # Même arbitrage que le pipeline réel : seuls les signaux habilités bloquent.
+    # Reproduire ici un `or` naïf ferait mentir l'outil d'inspection par rapport
+    # à ce qui se passe vraiment sur `on_retrieval`.
+    blocked, verdict = _verdict_guard._content_verdict(content)
+    risk = float(verdict["risk"])
+    flagged = blocked
 
     return AnalyzeDocumentResult(
         filename=req.filename,
@@ -353,6 +371,8 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
         outlier_distance=outlier_scan.distance,
         overall_risk=risk,
         neutralized=flagged,
+        advisory_signals=list(verdict["advisory_signals"]),
+        blocking_signals=list(verdict["blocking_signals"]),
         pii_redacted=pii_scan.redacted,
         pii_categories=list(pii_scan.categories),
         pii_count=pii_scan.count,
