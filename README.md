@@ -68,6 +68,8 @@ Seul `aegis_core` est distribué. `victim/`, `web/` et `redteam/` restent dans l
 
 Le README annonçait depuis le début que le red-teaming était « pensé pour être branché en CI/CD ». Il ne l'était pas — et il échouait sur `main` sans que personne ne le voie. C'est ce qui rend les mesures durables plutôt que photographiques.
 
+Limite assumée : `requirements-ml.txt` a été généré sur une machine compatible CUDA et épingle 15 paquets `nvidia-*` (~2,5 Go de roues GPU). La CI installe donc la variante **CPU** de torch au lieu d'utiliser ce lock — elle ne le vérifie pas tel quel. La correction propre est un second lock CPU ; elle attendra que quelqu'un d'autre installe le projet, parce que c'est ce moment-là qui dira lequel des deux locks est le bon défaut.
+
 Note sur les tests sautés : dix tests dépendent de modèles entraînés que le dépôt ne versionne pas. Sur un poste de développement ils sont **sautés** avec un message qui dit quoi lancer — un `pytest` rouge au premier clone n'apprend rien à personne. En CI les modèles sont entraînés d'abord, donc rien n'est sauté.
 
 ## Journal d'audit signé (Ed25519)

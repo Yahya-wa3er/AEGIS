@@ -32,10 +32,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # torch CPU uniquement : la roue GPU par défaut pèse ~2,5 Go et
-          # n'apporte rien sur un runner sans carte graphique.
-          pip install --index-url https://download.pytorch.org/whl/cpu torch
-          pip install -r requirements-ml.txt
+
+      - name: Installer les dépendances ML (variante CPU)
+        # requirements-ml.txt N'EST PAS utilisé ici, volontairement : il a été
+        # généré sur une machine compatible CUDA et épingle donc 15 paquets
+        # nvidia-* (~2,5 Go de roues GPU). Un runner GitHub n'a pas de carte
+        # graphique : les télécharger ferait exploser la durée du job pour rien.
+        #
+        # On installe donc la variante CPU depuis l'index PyTorch dédié, puis
+        # les paquets purement Python depuis PyPI. Le compromis est assumé et
+        # écrit : la CI ne vérifie pas le lock ML tel quel. C'est le prix d'un
+        # lock unique généré sur un poste GPU -- la correction propre est un
+        # second lock CPU (requirements-ml-cpu.txt), à faire quand quelqu'un
+        # d'autre que Yahya installera le projet.
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          pip install "transformers>=4.44,<6" "scikit-learn>=1.5,<2"
 
       - name: Le noyau s'importe-t-il SANS les dépendances ML ?
         # Vérifie la promesse de séparation entre requirements.txt et
@@ -65,15 +77,14 @@ jobs:
         run: python -m scripts.generate_audit_key
 
       - name: Suite de tests
-        run: python -m pytest -q -rsxX
-
-      - name: Aucun test ne doit être sauté en CI
-        # Un test sauté en CI est un test qui ne protège rien. Sur un poste de
-        # dev c'est acceptable (le modèle n'est pas entraîné) ; ici, non.
+        # -rsxX liste les tests sautés et les xfail dans le résumé. Un test sauté
+        # en CI est un test qui ne protège rien : sur un poste de dev c'est
+        # acceptable (le modèle n'est pas entraîné), ici c'est un signal.
+        # Une seule exécution suffit à le voir -- relancer pytest deux fois de
+        # plus pour compter les SKIPPED coûtait trois fois le temps du job.
         run: |
-          python -m pytest -q --collect-only >/dev/null
-          python -m pytest -rs 2>&1 | tee /tmp/pytest.log
-          if grep -q "SKIPPED" /tmp/pytest.log; then
+          python -m pytest -q -rsxX 2>&1 | tee /tmp/pytest.log
+          if grep -qE "^SKIPPED|s  *\[" /tmp/pytest.log; then
             echo "::warning::des tests ont été sautés en CI -- vérifier tests/conftest.py"
           fi
 
