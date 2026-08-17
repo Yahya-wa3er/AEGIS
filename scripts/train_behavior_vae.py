@@ -27,12 +27,20 @@ from torch.utils.data import DataLoader, TensorDataset
 from aegis_core.behavior_detector import BetaVAE, vae_loss
 from aegis_core.behavior_features import INPUT_DIM, ActionEvent, encode_session
 from aegis_core.model_io import write_manifest
+from aegis_core.stats import rate
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 TRAIN_PATH = Path("data/behavior_sessions_train.jsonl")
-EVAL_PATH = Path("data/behavior_sessions_eval.jsonl")
+CALIB_PATH = Path("data/behavior_sessions_calibration.jsonl")
+TEST_PATH = Path("data/behavior_sessions_test.jsonl")
+
+# Taux de faux positifs accepté sur des sessions légitimes. Le seuil en découle,
+# au lieu de découler d'un « moyenne + 3 écarts-types » dont personne ne sait à
+# quel taux il correspond. Un scan comportemental ne bloque rien (il journalise) :
+# on peut donc se permettre 2 % plutôt que 0, et gagner en rappel.
+TARGET_FALSE_POSITIVE_RATE = 0.02
 OUTPUT_DIR = Path("models/behavior_vae")
 
 LATENT_DIM = 4
@@ -77,9 +85,9 @@ class EvalRow:
     category: str
 
 
-def load_eval_rows() -> list[EvalRow]:
+def load_rows(path: Path) -> list[EvalRow]:
     rows = []
-    for line in EVAL_PATH.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
@@ -113,47 +121,65 @@ def train() -> BetaVAE:
     return model
 
 
-def evaluate(model: BetaVAE) -> float:
-    """Mesure la séparation normal/anormal sur le jeu d'évaluation, choisit un seuil,
-    et affiche un rapport lisible catégorie par catégorie."""
-    rows = load_eval_rows()
-    x_eval = torch.stack([r.x for r in rows])
-    errors = reconstruction_error(model, x_eval).tolist()
+def calibrate(model: BetaVAE) -> float:
+    """Choisit le seuil sur des sessions normales TENUES À L'ÉCART.
+
+    La version précédente prenait `moyenne(normaux du jeu d'éval) + 3σ` puis
+    annonçait « 0 faux positif » sur ces mêmes normaux. Trois écarts-types
+    au-dessus de la moyenne d'un échantillon de 60 laissent zéro point au-dessus
+    dans l'immense majorité des tirages : le chiffre décrivait le seuil, pas le
+    modèle.
+    """
+    rows = load_rows(CALIB_PATH)
+    errors = reconstruction_error(model, torch.stack([r.x for r in rows])).tolist()
+    threshold = float(torch.quantile(torch.tensor(errors), 1.0 - TARGET_FALSE_POSITIVE_RATE))
+    logger.info(
+        "Seuil calibré sur %d sessions normales : %.4f (quantile %.0f%%, cible %.0f%% de faux positifs).",
+        len(errors), threshold, 100 * (1 - TARGET_FALSE_POSITIVE_RATE), 100 * TARGET_FALSE_POSITIVE_RATE,
+    )
+    return threshold
+
+
+def measure(model: BetaVAE, threshold: float) -> dict[str, object]:
+    """Mesure sur le jeu de test, seuil déjà figé, intervalles de confiance publiés."""
+    rows = load_rows(TEST_PATH)
+    errors = reconstruction_error(model, torch.stack([r.x for r in rows])).tolist()
 
     by_category: dict[str, list[float]] = {}
     for row, err in zip(rows, errors):
         by_category.setdefault(row.category, []).append(err)
 
-    logger.info("--- Erreur de reconstruction par catégorie (plus haut = plus suspect) ---")
+    logger.info("--- Erreur de reconstruction par catégorie (jeu de test) ---")
     for category, values in sorted(by_category.items()):
         avg = sum(values) / len(values)
-        logger.info("  %-20s n=%-3d moyenne=%.4f  min=%.4f  max=%.4f", category, len(values), avg, min(values), max(values))
+        logger.info("  %-20s n=%-3d moyenne=%.4f  min=%.4f  max=%.4f",
+                    category, len(values), avg, min(values), max(values))
 
-    normal_errors = by_category.get("normal", [])
-    threshold = max(normal_errors) if normal_errors else 0.0
-    # Marge de sécurité : le seuil brut serait le pire score normal observé, ce qui est
-    # fragile (un seul point extrême le fixerait) -- on prend plutôt une marge au-dessus
-    # de la moyenne + écart-type, plus robuste sur un jeu de validation plus large en prod.
-    if normal_errors:
-        mean = sum(normal_errors) / len(normal_errors)
-        variance = sum((v - mean) ** 2 for v in normal_errors) / len(normal_errors)
-        threshold = mean + 3 * (variance ** 0.5)
+    per_category: dict[str, object] = {}
+    logger.info("--- Mesure (seuil figé : %.4f) ---", threshold)
+    for category, values in sorted(by_category.items()):
+        hits = sum(1 for v in values if v > threshold)
+        measured = rate(hits, len(values))
+        per_category[category] = measured.as_dict()
+        kind = "faux positifs" if category == "normal" else "rappel"
+        logger.info("  %-20s %-12s : %s", category, kind, measured.format())
 
-    anomalous_errors = [err for row, err in zip(rows, errors) if row.label == "anomalous"]
-    detected = sum(1 for err in anomalous_errors if err > threshold)
-    false_positives = sum(1 for err in normal_errors if err > threshold)
+    anomalous = [(cat, v) for cat, values in by_category.items() if cat != "normal" for v in values]
+    overall_recall = rate(sum(1 for _, v in anomalous if v > threshold), len(anomalous))
+    logger.info("  %-20s %-12s : %s", "TOUTES anomalies", "rappel", overall_recall.format())
 
-    logger.info("--- Seuil retenu : %.4f (moyenne_normal + 3 écarts-types) ---", threshold)
-    logger.info(
-        "Détection : %d/%d anomalies au-dessus du seuil -- Faux positifs : %d/%d sessions normales",
-        detected, len(anomalous_errors), false_positives, len(normal_errors),
-    )
-    return threshold
+    return {
+        "threshold": threshold,
+        "target_false_positive_rate": TARGET_FALSE_POSITIVE_RATE,
+        "recall_all_anomalies": overall_recall.as_dict(),
+        "per_category": per_category,
+    }
 
 
 def main() -> None:
     model = train()
-    threshold = evaluate(model)
+    threshold = calibrate(model)
+    metrics = measure(model, threshold)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     # `state_dict()` ne contient que des tenseurs : le fichier est donc rechargeable
@@ -172,7 +198,12 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    write_manifest(OUTPUT_DIR, ["model.pt", "config.json"])
+    # La mesure voyage avec le modèle : un seuil sans le taux qu'il produit, et
+    # sans l'intervalle de confiance de ce taux, n'est pas interprétable plus tard.
+    (OUTPUT_DIR / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    write_manifest(OUTPUT_DIR, ["model.pt", "config.json", "metrics.json"])
     logger.info("Modèle, seuil et manifeste d'intégrité sauvegardés dans '%s'.", OUTPUT_DIR)
 
 

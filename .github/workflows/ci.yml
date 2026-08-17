@@ -66,9 +66,31 @@ jobs:
           subprocess.check_call([py, "-c", "import aegis_core.middleware; print('noyau importable sans torch : OK')"])
           PY
 
+      - name: Les corpus versionnés correspondent-ils à leur générateur ?
+        # Défaut trouvé au lot 5A : `data/rag_corpus_eval.jsonl` contenait 4
+        # payloads empoisonnés là où le générateur en produisait 14. Les chiffres
+        # publiés avaient donc été mesurés sur un corpus que plus personne ne
+        # pouvait reproduire -- relancer le script donnait d'autres résultats.
+        # Un corpus qui dérive de son générateur est une mesure qui dérive de sa
+        # méthode, en silence.
+        run: |
+          python -m scripts.generate_rag_corpus
+          python -m scripts.generate_behavior_sessions
+          # --porcelain plutôt que `git diff` : il attrape aussi les fichiers
+          # NOUVEAUX, c'est-à-dire le cas où le générateur produit un jeu que
+          # personne n'a commité.
+          if [ -n "$(git status --porcelain -- data/)" ]; then
+            echo "::error::data/ ne correspond plus à son générateur — relance les scripts et commite le résultat"
+            git status --porcelain -- data/
+            git diff --stat -- data/
+            exit 1
+          fi
+
       - name: Entraîner les détecteurs légers
-        # Sans ça, dix tests seraient sautés (voir tests/conftest.py) : en CI on
-        # veut au contraire que ces détecteurs soient réellement vérifiés.
+        # Sans ça, plusieurs tests seraient sautés (voir tests/conftest.py) : en
+        # CI on veut au contraire que ces détecteurs soient réellement vérifiés.
+        # Les scripts refusent de démarrer si les jeux se recouvrent
+        # (scripts/dataset_split.assert_no_leakage).
         run: |
           python -m scripts.train_rag_outlier_detector
           python -m scripts.train_behavior_vae
@@ -93,6 +115,13 @@ jobs:
         # positifs dépassent le plafond. Les deux comptent : un détecteur qui
         # bloque tout satisfait le premier critère et ne détecte rien.
         run: python -m redteam.run_redteam
+
+      - name: Latence des points d'interception
+        # Non bloquant : la latence d'un runner partagé varie trop pour servir de
+        # porte. Le journal du job garde en revanche une trace datée, ce qui rend
+        # une dérive visible en comparant deux runs -- et surtout, le chiffre
+        # existe, ce qui n'était pas le cas.
+        run: python -m scripts.benchmark_latency --iterations 100 --json /tmp/latence.json
 
       - name: Construire la roue distribuable
         run: |

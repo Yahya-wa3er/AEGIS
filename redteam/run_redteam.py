@@ -28,6 +28,7 @@ import sys
 from dataclasses import dataclass
 
 from aegis_core.injection_detector import InjectionDetector
+from aegis_core.stats import Proportion, min_samples_for_lower_bound, rate
 from aegis_core.middleware import AegisGuard
 from redteam.payloads import PAYLOADS, AttackPayload
 
@@ -60,12 +61,16 @@ class Measurement:
     """Blocage et faux positifs d'une configuration donnée, sur le périmètre V0."""
 
     label: str
-    block_rate: float
-    false_positive_rate: float
-    blocked: int
-    attacks: int
-    false_positives: int
-    controls: int
+    recall: Proportion
+    false_positives: Proportion
+
+    @property
+    def block_rate(self) -> float:
+        return self.recall.rate
+
+    @property
+    def false_positive_rate(self) -> float:
+        return self.false_positives.rate
 
     @property
     def score(self) -> float:
@@ -80,10 +85,8 @@ def _measure(label: str, results: list[PayloadResult]) -> Measurement:
     false_positives = [r for r in controls if r.flagged]
     return Measurement(
         label=label,
-        block_rate=len(blocked) / len(attacks) if attacks else 1.0,
-        false_positive_rate=len(false_positives) / len(controls) if controls else 0.0,
-        blocked=len(blocked), attacks=len(attacks),
-        false_positives=len(false_positives), controls=len(controls),
+        recall=rate(len(blocked), len(attacks)),
+        false_positives=rate(len(false_positives), len(controls)),
     )
 
 
@@ -133,11 +136,15 @@ def main() -> int:
         print(f"\n({len(out_of_scope)} payload(s) hors périmètre, non comptés dans le score)")
 
     print("-" * 72)
-    print(f"Taux de blocage des attaques (recall) : {measured.block_rate:.0%} "
-          f"({measured.blocked}/{measured.attacks})")
-    print(f"Taux de faux positifs : {measured.false_positive_rate:.0%} "
-          f"({measured.false_positives}/{measured.controls})")
+    print(f"Taux de blocage des attaques (recall) : {measured.recall.format()}")
+    print(f"Taux de faux positifs                 : {measured.false_positives.format()}")
     print(f"ROBUSTNESS SCORE : {measured.score:.0%}")
+    print()
+    print("Les crochets donnent l'intervalle de confiance à 95 % (Wilson). À ces")
+    print("volumes il est large, et c'est l'information la plus utile du rapport :")
+    print(f"« {measured.recall.rate:.0%} » sur {measured.recall.total} attaques reste compatible avec un taux réel de")
+    print(f"{measured.recall.low:.0%}. Le chiffre ne se resserre qu'en agrandissant le corpus, pas en")
+    print("améliorant le détecteur.")
     print("=" * 72)
 
     # Détail par détecteur. Ces chiffres expliquent le précédent ; ils ne le
@@ -145,10 +152,10 @@ def main() -> int:
     rules = _measure("Règles seules", run(use_ml=False))
     combined = _measure("Règles + ML", run(use_ml=True))
 
-    print("Détail par détecteur, pris isolément (blocage / faux positifs) :")
+    print("Détail par détecteur, pris isolément :")
     for m in (rules, combined, measured):
         marker = "   <-- ce que le produit fait" if m is measured else ""
-        print(f"  {m.label:18s} : {m.block_rate:>4.0%} / {m.false_positive_rate:>4.0%}{marker}")
+        print(f"  {m.label:18s} blocage {m.recall.format():>24s}   faux positifs {m.false_positives.format():>22s}{marker}")
 
     if combined.false_positive_rate > rules.false_positive_rate:
         print("  --> Les faux positifs viennent du classifieur ML, pas des règles.")
@@ -162,6 +169,22 @@ def main() -> int:
         failures.append(f"taux de blocage sous le seuil requis ({BLOCK_RATE_THRESHOLD:.0%})")
     if measured.false_positive_rate > MAX_FALSE_POSITIVE_RATE:
         failures.append(f"taux de faux positifs au-dessus du plafond ({MAX_FALSE_POSITIVE_RATE:.0%})")
+
+    # La porte se prononce sur le taux OBSERVÉ, pas sur la borne basse : à 12
+    # attaques, exiger que l'intervalle entier dépasse 80 % ferait échouer un
+    # détecteur parfait. On dit néanmoins ce qu'il faudrait pour que la garantie
+    # soit statistique et plus seulement empirique -- c'est une tâche, pas une
+    # fatalité.
+    if measured.recall.low < BLOCK_RATE_THRESHOLD:
+        perfect = min_samples_for_lower_bound(BLOCK_RATE_THRESHOLD)
+        tolerant = min_samples_for_lower_bound(BLOCK_RATE_THRESHOLD, max_failures=2)
+        print(
+            f"NOTE : la borne basse du blocage ({measured.recall.low:.0%}) reste sous le seuil "
+            f"({BLOCK_RATE_THRESHOLD:.0%}).\n"
+            f"       Le détecteur n'est pas en cause : le corpus est trop petit pour trancher.\n"
+            f"       Il faudrait {perfect} attaques toutes bloquées -- ou {tolerant} en tolérant 2 ratés --\n"
+            f"       pour que la garantie soit statistique et plus seulement empirique."
+        )
 
     if failures:
         for reason in failures:

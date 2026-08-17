@@ -11,6 +11,17 @@ Ce script génère, via un LLM réel (OpenRouter), des exemples français étiqu
 bénins distincts -- pour éviter qu'un générateur unique ne produise des exemples
 stylistiquement homogènes qui feraient sur-apprendre un pattern artificiel au modèle.
 
+Chaque exemple porte désormais son `group` (le style ou le thème qui l'a produit),
+ce qui rend possible un découpage train/test *par groupe*. Sans ce champ, la
+version précédente ne permettait qu'un découpage par ligne, qui place des
+exemples issus du même appel LLM des deux côtés de la cloison -- le classifieur
+est alors mesuré sur des tournures qu'il a déjà vues.
+
+Le fichier `data/french_injection_examples.jsonl` versionné a été produit avant
+ce changement : il ne porte pas de groupe, et `train_injection_classifier.py`
+continue donc de découper par ligne. Régénérer le corpus est le préalable au
+correctif -- c'est dit au README plutôt que corrigé à moitié.
+
 Usage:
     python scripts/generate_french_examples.py --n-per-style 20
 """
@@ -59,10 +70,21 @@ BENIGN_TOPICS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class LabeledExample:
-    """Un exemple d'entraînement étiqueté : texte français + label binaire."""
+    """Un exemple d'entraînement étiqueté : texte français + label binaire.
+
+    `group` retient le style d'attaque ou le thème bénin qui a produit
+    l'exemple. Sans ce champ, un découpage train/test *par ligne* met des
+    exemples du même style des deux côtés de la cloison : le classifieur est
+    alors évalué sur des tournures qu'il a déjà vues, et sa précision publiée
+    est optimiste (correctif P1-M2, volet classifieur).
+
+    Vingt exemples issus d'un même appel LLM, sur une même consigne, ne sont pas
+    vingt observations indépendantes.
+    """
 
     text: str
     label: int  # 1 = injection, 0 = bénin
+    group: str = "inconnu"
 
 
 class MissingApiKeyError(RuntimeError):
@@ -105,7 +127,10 @@ def _generate_batch(client: OpenAI, model: str, style_or_topic: str, label: int,
     )
     payload = json.loads(response.choices[0].message.content)
     texts = payload.get("examples", [])
-    return [LabeledExample(text=text.strip(), label=label) for text in texts if text.strip()]
+    return [
+        LabeledExample(text=text.strip(), label=label, group=style_or_topic)
+        for text in texts if text.strip()
+    ]
 
 
 def generate_dataset(n_per_style: int) -> list[LabeledExample]:
@@ -132,7 +157,10 @@ def save_examples(examples: list[LabeledExample], path: Path = OUTPUT_PATH) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for example in examples:
-            handle.write(json.dumps({"text": example.text, "label": example.label}, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(
+                {"text": example.text, "label": example.label, "group": example.group},
+                ensure_ascii=False,
+            ) + "\n")
     logger.info("Sauvegardé %d exemples dans '%s'.", len(examples), path)
 
 

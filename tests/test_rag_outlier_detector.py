@@ -34,12 +34,38 @@ def test_flags_clearly_poisoned_document():
 
 
 @pytest.mark.requires_models("rag_outlier")
-def test_flags_legitimate_but_out_of_domain_document():
-    """Cas qui démontre la valeur ajoutée par rapport à injection_detector : ce texte
-    ne contient AUCUN motif d'injection, mais son sens (registre RGPD) est loin du
-    domaine "support client" appris à l'entraînement."""
+def test_does_not_flag_a_legitimate_out_of_domain_document():
+    """Ce test affirmait l'inverse, et c'était le même contresens qu'ailleurs.
+
+    Il s'intitulait « démontre la valeur ajoutée » et vérifiait qu'une mention
+    RGPD -- document légitime s'il en est -- soit signalée. Signaler un document
+    légitime n'est pas une valeur ajoutée : c'est un faux positif, ici érigé en
+    critère de réussite. Le corpus faisait la même erreur en amont, où ces
+    documents portaient le label `anomalous` : les neutraliser comptait donc
+    dans le « 89 % de rappel » annoncé.
+
+    Corpus corrigé (lot 5A) : les documents légitimes hors-domaine portent le
+    label `normal` et entrent dans la calibration du seuil. Celui-ci en ressort
+    plus haut, et cette phrase n'est plus signalée.
+    """
     detector = RagOutlierDetector()
     result = detector.score(
         "Conformément au RGPD, vous pouvez demander la suppression de vos données personnelles à tout moment."
+    )
+    assert result.flagged is False
+
+
+@pytest.mark.requires_models("rag_outlier")
+def test_still_flags_half_the_legitimate_out_of_domain_documents():
+    """La limite, mesurée plutôt qu'affirmée.
+
+    Le correctif de corpus n'a pas rendu le détecteur bon sur le hors-domaine :
+    il en signale encore la moitié -- 50 % [19 %-81 %] sur le jeu de test. Ce
+    test fige ce constat sur un cas concret, pour qu'une amélioration future se
+    voie (il échouera) au lieu de passer inaperçue.
+    """
+    detector = RagOutlierDetector()
+    result = detector.score(
+        "Les étudiants boursiers bénéficient d'une exonération des droits d'inscription."
     )
     assert result.flagged is True

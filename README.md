@@ -106,21 +106,23 @@ La clé privée est exclue du dépôt par `.gitignore`. Ne la regénère pas san
 
 Les trois signaux de contenu n'ont pas la même nature, et les traiter à l'identique par un `or` était une erreur mesurable : le maillon le plus bruyant décidait pour tout le monde.
 
-| Signal | Nature | Blocage / faux positifs mesurés |
-|---|---|---|
-| Règles | déterministe, explicable | **100 % / 0 %** |
-| Classifieur ML | probabiliste | 100 % / **50 %** |
-| Outliers RAG | probabiliste | — / **50 %** |
+| Signal | Nature | Blocage | Faux positifs |
+|---|---|---|---|
+| Règles | déterministe, explicable | **100 % [76 %-100 %]** (12/12) | **0 % [0 %-28 %]** (0/10) |
+| Classifieur ML | probabiliste | 100 % [76 %-100 %] (12/12) | **50 % [24 %-76 %]** (5/10) |
+| Outliers RAG | probabiliste | 86 % [60 %-96 %] (12/14) | **50 % [19 %-81 %]** (3/6) hors-domaine |
 
-Les 50 % ne sont pas une estimation : cinq des dix documents de contrôle du corpus de red-teaming sont signalés à tort par chacun de ces deux détecteurs — un rapport financier, un bulletin météo, de la documentation d'API, une note RH, une mention RGPD.
+Les crochets sont l'intervalle de confiance à 95 % — voir « Comment les chiffres de ce README sont produits ». Ils sont larges, et c'est l'information principale : à ces volumes, aucun de ces taux n'est établi à mieux que ±25 points.
+
+Les 50 % du classifieur ne sont pas une estimation : cinq des dix documents de contrôle du corpus de red-teaming sont signalés à tort — un rapport financier, un bulletin météo, de la documentation d'API, une note RH, une mention RGPD. Ceux du détecteur d'outliers sont mesurés sur son jeu de test, sur des documents légitimes d'un registre non appris.
 
 `AegisConfig.blocking_signals` ne contient donc que `rules` par défaut. Les deux autres continuent de tourner, leur score est journalisé et affiché, et le journal compte les cas où ils **auraient** bloqué :
 
 ```
-Comparaison par couche (blocage / faux positifs) :
-  Règles seules      : 100% / 0%
-  Règles + ML        : 100% / 50%
-  Pipeline réel      : 100% / 0%   <-- décision effectivement appliquée aux documents
+Détail par détecteur, pris isolément :
+  Règles seules      blocage  100% [76%-100%] (12/12)   faux positifs   0% [0%-28%] (0/10)
+  Règles + ML        blocage  100% [76%-100%] (12/12)   faux positifs  50% [24%-76%] (5/10)
+  Pipeline réel      blocage  100% [76%-100%] (12/12)   faux positifs   0% [0%-28%] (0/10)   <-- ce que le produit fait
 ```
 
 **Ce n'est pas une mise au rebut.** Le corpus actuel ne peut pas mesurer ce que le classifieur apporte vraiment : sa valeur est de généraliser à des formulations qu'aucune règle n'anticipe, et douze payloads calibrés sur les règles ne testent pas cela. Le compteur `would_have_blocked` est précisément ce qui permettra de lui rendre le pouvoir de bloquer — le jour où il montrera des détections que les règles ratent, avec des chiffres plutôt qu'une intuition.
@@ -137,7 +139,7 @@ export AEGIS_BLOCKING_SIGNALS=rules,rag_outlier
 
 ### Une mesure qui disait l'inverse de ce qu'elle semblait dire
 
-Le README annonçait *« 0 faux positif sur le normal (0/30) »* pour le détecteur d'outliers. Ce n'était pas faux, c'était mal mesuré : les trente documents « normaux » viennent de `generate_rag_corpus.py`, **le même générateur que le corpus d'entraînement**. Le détecteur était évalué sur sa propre distribution. Sur du français légitime réellement varié, il se trompe une fois sur deux.
+Le README annonçait *« 0 faux positif sur le normal (0/30) »* pour le détecteur d'outliers. Ce n'était pas faux, c'était mal mesuré, et de trois façons à la fois : les trente documents « normaux » venaient du **même générateur que le corpus d'entraînement** (le détecteur était évalué sur sa propre distribution) ; le **seuil était calculé sur ces trente documents** ; et les documents légitimes hors-domaine portaient le label `anomalous`, si bien que les signaler comptait comme une réussite. Sur un jeu de test réellement tenu à l'écart et correctement étiqueté, le détecteur se trompe une fois sur deux sur le hors-domaine — 50 % [19 %-81 %]. Le détail est dans « Comment les chiffres de ce README sont produits ».
 
 Un test le disait aussi, dans l'autre sens : `test_on_retrieval_neutralizes_outlier_even_without_injection_pattern` vérifiait qu'une mention RGPD parfaitement légitime était neutralisée, sous le titre « démontre l'apport du détecteur d'outliers ». Ce n'était pas une détection, c'était un faux positif célébré comme une fonctionnalité. Le test a été réécrit pour vérifier l'inverse.
 
@@ -208,8 +210,8 @@ Sans modèle entraîné, `InjectionDetector` bascule automatiquement en mode reg
 Le détecteur (`aegis_core/behavior_detector.py`) surveille les 5 dernières actions d'un agent (rien / clôture de ticket / email / virement, + montant) et signale les enchaînements statistiquement éloignés de tout ce qu'il a vu à l'entraînement -- y compris des cas que le Policy Engine ne peut pas voir, comme une fréquence d'actions anormale (voir "Limites connues"). Contrairement au classifieur d'injection, il n'y a pas de repli par règles : sans modèle entraîné, il renvoie un risque nul. C'est un comportement **fail-open**, pas « fail-safe » — un composant qui laisse tout passer quand il défaille est l'inverse de sûr. Le mode est nommé, rapporté dans `robustness_report()`, et peut être rendu bloquant via `AegisConfig.required_detectors` (voir « Mode de défaillance » ci-dessous).
 
 ```bash
-python -m scripts.generate_behavior_sessions   # génère des sessions synthétiques normales + anormales (data/)
-python -m scripts.train_behavior_vae            # entraîne le Beta-VAE, sauvegarde dans models/behavior_vae/
+python -m scripts.generate_behavior_sessions  # train (1000) / calibration (200) / test (320)
+python -m scripts.train_behavior_vae           # ajuste, calibre, mesure, écrit models/behavior_vae/
 ```
 
 Seed fixée (42) : reproductible à l'identique d'une machine à l'autre.
@@ -219,9 +221,11 @@ Seed fixée (42) : reproductible à l'identique d'une machine à l'autre.
 Le détecteur (`aegis_core/rag_outlier_detector.py`) compare le sens d'un document récupéré au "centre" du domaine documentaire normal (support client), pour repérer un document empoisonné ou hors-sujet -- un signal indépendant du contenu textuel précis analysé par `injection_detector.py`. Simplification assumée : TF-IDF (scikit-learn, déjà une dépendance) plutôt que de vrais embeddings de phrases (voir "Limites connues").
 
 ```bash
-python -m scripts.generate_rag_corpus            # documents synthétiques normaux + jeu d'évaluation
-python -m scripts.train_rag_outlier_detector      # entraîne le vectoriseur, sauvegarde dans models/rag_outlier/
+python -m scripts.generate_rag_corpus        # train / calibration / test, découpés par gabarit
+python -m scripts.train_rag_outlier_detector  # ajuste, calibre, mesure, écrit models/rag_outlier/
 ```
+
+Le script refuse de démarrer si les trois jeux se recouvrent, calibre son seuil sur `calibration` et n'ouvre `test` qu'une fois, à la fin. Les mesures partent dans `models/rag_outlier/metrics.json`, à côté du modèle : un seuil sans le taux qu'il produit n'est pas interprétable six mois plus tard.
 
 ## Analyse de la requête utilisateur et des retours d'outils
 
@@ -229,7 +233,7 @@ Deux points d'interception ajoutés au lot 3C, qui ferment les deux dernières s
 
 **`on_prompt` — l'injection directe.** Jusqu'ici, seuls les documents récupérés étaient analysés : une instruction tapée par l'utilisateur lui-même n'était scannée nulle part dans le pipeline. Le détecteur savait pourtant la reconnaître — `run_redteam` l'appelait à la main sur les mêmes payloads, ce qui donnait une impression de couverture que le produit assemblé n'avait pas. Une requête refusée n'atteint jamais le modèle : bloquer après l'appel LLM aurait déjà coûté un aller-retour, et le modèle aurait déjà lu l'injection.
 
-**Seules les règles bloquent une requête ; le score ML est journalisé sans bloquer.** Ce n'est pas de la timidité, c'est ce que disent les mesures : les règles obtiennent 100 % de blocage pour 0 % de faux positifs, le classifieur signale un document légitime sur deux. Un faux positif sur un document coûte un bout de contexte ; un faux positif sur la requête coûte un refus opposé à quelqu'un qui posait une question normale. On bloque sur le signal déterministe dont le taux d'erreur est mesuré à zéro, on observe l'autre. Le journal enregistre `ml_would_have_blocked` : c'est ce chiffre qui permettra de rediscuter le choix, avec des données plutôt que des intentions.
+**Seules les règles bloquent une requête ; le score ML est journalisé sans bloquer.** Ce n'est pas de la timidité, c'est ce que disent les mesures : les règles obtiennent 100 % [76 %-100 %] de blocage pour 0 % [0 %-28 %] de faux positifs, le classifieur signale un document légitime sur deux (50 % [24 %-76 %]). Un faux positif sur un document coûte un bout de contexte ; un faux positif sur la requête coûte un refus opposé à quelqu'un qui posait une question normale. On bloque sur le signal déterministe dont le taux d'erreur est mesuré à zéro, on observe l'autre. Le journal enregistre `ml_would_have_blocked` : c'est ce chiffre qui permettra de rediscuter le choix, avec des données plutôt que des intentions.
 
 **`on_tool_result` — l'injection de second ordre.** Ce qu'un outil renvoie est une **donnée**, pas une instruction — au même titre qu'un document récupéré. Tant que les outils sont des mocks, c'est sans conséquence ; dès qu'un outil lit une base, appelle une API ou récupère une page, son retour est du contenu contrôlable par un attaquant, réinjecté tel quel dans le contexte. C'est aujourd'hui le vecteur le plus exploité contre les agents réels, et le plus négligé — parce que « c'est notre propre outil qui répond ». Même politique que pour les documents : neutralisation par un texte neutre, puis masquage des données personnelles.
 
@@ -240,6 +244,71 @@ Le system prompt de `VictimAgent` exige que chaque réponse cite le document uti
 ## Assainissement des documents (données personnelles / secrets, section 4.5)
 
 `aegis_core/pii_detector.py` masque, dans chaque document RÉCUPÉRÉ ET NON NEUTRALISÉ, les données qui n'ont rien à faire dans un contexte envoyé à un LLM tiers : emails, IBAN, numéros de carte bancaire, numéros de téléphone français, clés d'API. C'est un troisième signal, indépendant des deux autres (`injection_detector.py`, `rag_outlier_detector.py`) : un document parfaitement légitime peut très bien contenir une donnée sensible laissée par erreur -- ce n'est pas une question de confiance envers le document, mais d'hygiène. Uniquement des règles regex, aucun entraînement nécessaire.
+
+## Comment les chiffres de ce README sont produits
+
+Tous les taux publiés ici viennent d'un jeu de **test**, mesuré une fois, avec un seuil figé avant la mesure. Ça n'a pas toujours été le cas, et la différence n'est pas cosmétique.
+
+### Ce qui n'allait pas (lot 5A)
+
+**Le seuil était calibré sur le jeu de test.** `train_rag_outlier_detector.py` calculait `seuil = moyenne(normaux du jeu d'éval) + 2σ`, puis annonçait le taux de faux positifs *sur ces mêmes normaux*. Un seuil à deux écarts-types laisse par construction ~2 % de l'échantillon au-dessus : sur 30 documents, 0 ou 1. Le « 0 % de faux positifs » ne mesurait pas le détecteur, il décrivait le seuil. Le VAE comportemental faisait pire — `seuil = moyenne + 3σ` sur son propre jeu d'évaluation garantit 0 faux positif à peu près toujours.
+
+**Le coefficient aussi.** Le commentaire du code le disait sans le nommer : « k=2 (pas 3) choisi après comparaison sur le jeu d'évaluation : passe de 33 % à 89 % de rappel ». C'est un hyperparamètre optimisé sur le jeu de test.
+
+**Les jeux se recouvraient.** Documents d'entraînement et d'évaluation sortaient des douze mêmes gabarits remplis au hasard : **4 lignes d'évaluation sur 39 étaient identiques au caractère près** à une ligne d'entraînement, et 12 des 13 gabarits d'évaluation figuraient à l'entraînement.
+
+**Le corpus avait dérivé de son générateur.** `data/rag_corpus_eval.jsonl` contenait 4 payloads empoisonnés là où le générateur en produisait 14 : les chiffres publiés portaient sur un corpus que relancer le script ne reproduisait plus.
+
+**Et les faux positifs comptaient comme des réussites.** Les documents légitimes hors-domaine (note RGPD, doc d'API, planning RH) portaient le label `anomalous`. Les neutraliser était donc comptabilisé dans le « 89 % de rappel ». C'est ce qui expliquait la contradiction que le laboratoire de robustesse montrait depuis le début : 0 % de faux positifs annoncés, et des documents légitimes visiblement neutralisés à l'écran.
+
+### La discipline appliquée
+
+Trois jeux, un rôle chacun, et jamais deux :
+
+| jeu | rôle | ce qu'il ne fait jamais |
+|---|---|---|
+| `train` | ajuste le modèle | rien d'autre |
+| `calibration` | choisit seuils et hyperparamètres | n'est jamais mesuré |
+| `test` | produit les chiffres publiés | ne décide de rien |
+
+Le découpage se fait **par gabarit** (`scripts/dataset_split.py`), pas par ligne : deux phrases issues du même patron ne sont pas deux observations indépendantes. La question posée au détecteur change de nature — « reconnais-tu cette phrase ? » devient « généralises-tu à une tournure jamais vue ? ». `assert_no_leakage` refuse tout recouvrement exact et rapporte les quasi-doublons ; les scripts d'entraînement l'appellent avant d'apprendre quoi que ce soit, et la CI vérifie en plus que `data/` correspond toujours à son générateur.
+
+Les seuils ne sortent plus d'une formule dont personne ne connaît le taux : ce sont des **quantiles du jeu de calibration**, dérivés d'une cible explicite (`TARGET_FALSE_POSITIVE_RATE`). « Je tolère au plus 5 % de faux positifs sur des documents légitimes » est une décision d'exploitation ; elle se prend en clair.
+
+### Les intervalles de confiance
+
+Chaque taux est publié avec son intervalle de Wilson à 95 % (`aegis_core/stats.py`) :
+
+```
+100% [76%-100%] (12/12)        0% [0%-28%] (0/10)
+```
+
+Ces deux lignes disent ce que « 100 % / 0 % » laissait croire faux. Douze succès sur douze restent compatibles avec un système qui échoue une fois sur cinq. L'intervalle ne se resserre pas en améliorant le détecteur : il se resserre en agrandissant le corpus — il faudrait 16 attaques toutes bloquées, ou 33 en tolérant deux ratés, pour garantir statistiquement le seuil de 80 %. `run_redteam` l'affiche à chaque exécution.
+
+Wilson plutôt que l'intervalle normal parce que ce dernier donne `[0 ; 0]` pour 0/10 et `[100 % ; 100 %]` pour 12/12 : il affirme une certitude absolue exactement là où il n'y en a aucune, et c'est le cas le plus fréquent ici. L'implémentation est vérifiée contre `statsmodels` (identique à 1e-6 près, voir `tests/test_stats.py`).
+
+Un intervalle quantifie l'incertitude d'**échantillonnage**. Il ne dit rien du biais de sélection : si les payloads ont été écrits en regardant les règles, l'intervalle sera étroit et le chiffre restera faux. C'est un problème de corpus, pas de statistique.
+
+## Latence
+
+Mesurée par `python -m scripts.benchmark_latency` (300 itérations, 5 de chauffe, conteneur Linux 2 vCPU ; ces chiffres se comparent entre eux, pas dans l'absolu). La dernière colonne rapporte le p95 à un aller-retour LLM de 500 ms.
+
+| point de mesure | p50 | p95 | p99 | part d'un appel LLM |
+|---|---|---|---|---|
+| règles seules — document court | 0,16 ms | 0,19 ms | 0,23 ms | 0,04 % |
+| règles seules — document long (3,6 ko) | 5,9 ms | 6,4 ms | 6,7 ms | 1,3 % |
+| **règles seules — document au plafond (100 ko)** | **161 ms** | **167 ms** | **171 ms** | **33 %** |
+| `on_prompt` | 0,16 ms | 0,25 ms | 0,28 ms | 0,05 % |
+| `on_retrieval` — 1 chunk propre | 0,34 ms | 0,47 ms | 0,52 ms | 0,09 % |
+| `on_retrieval` — 1 chunk piégé | 0,48 ms | 0,70 ms | 0,79 ms | 0,14 % |
+| `on_tool_call` — autorisé | 1,02 ms | 1,21 ms | 1,35 ms | 0,24 % |
+| `on_tool_call` — bloqué | 0,11 ms | 0,17 ms | 0,19 ms | 0,03 % |
+| `on_tool_result` | 0,29 ms | 0,35 ms | 0,38 ms | 0,07 % |
+| journal d'audit — 1 entrée (hash + signature Ed25519 + pseudonymisation) | 0,08 ms | 0,13 ms | 0,17 ms | 0,03 % |
+
+Sur un parcours normal, le coût d'AEGIS est du bruit devant un appel LLM. **La ligne à retenir est la troisième.** Le scan par règles est linéaire, à environ 1,6 µs par caractère : un document à la taille maximale acceptée (`MAX_SCAN_CHARS = 100 000`) coûte 167 ms de CPU, soit un tiers d'un appel LLM — et la taille d'un document récupéré est contrôlée par celui qui l'a écrit, donc potentiellement par l'attaquant. Dix chunks rembourrés suffisent à consommer 1,7 seconde de CPU avant même le premier appel au modèle. C'est un vecteur d'épuisement de ressources (OWASP LLM06) que la troncature seule ne ferme pas ; il faudrait un budget par requête, qui n'existe pas encore.
+
+Le classifieur ML n'apparaît pas dans ce tableau : il n'était pas entraîné sur la machine de mesure. Le banc ajoute automatiquement les lignes correspondantes quand il l'est, et refuse de publier une ligne « avec ML » alimentée par le mode dégradé.
 
 ## Isolation de l'état par session
 
@@ -345,29 +414,38 @@ Les deux faux positifs venaient de la règle `<!--.*-->`, qui signalait *tout* c
 
 **Précaution de méthode.** Les neuf variantes d'obfuscation ont été ajoutées au corpus de red-teaming *après* le correctif. Un corpus construit sur les cas qu'on vient de faire passer ne mesure plus rien — ici le correctif est une normalisation générique, aucune règle ne cible un payload en particulier, et leur rôle est d'empêcher la régression. Le score sur 12 attaques reste par ailleurs statistiquement faible : voir la limite ci-dessous.
 
-**Sur une machine où le classifieur ML est entraîné, le tableau change.** Les règles restent à 100 % / 0 %, mais l'ensemble tombe à **50 % de faux positifs** — cinq documents légitimes sur dix signalés à tort, tous par le classifieur (`matched_rules` vide, `ml_score` entre 0,95 et 0,99). `run_redteam` affiche désormais les deux configurations côte à côte, précisément pour que ce coût soit visible :
+**Sur une machine où le classifieur ML est entraîné, le tableau change.** Les règles restent à 100 % [76 %-100 %] / 0 % [0 %-28 %], mais l'ensemble tombe à **50 % [24 %-76 %] de faux positifs** — cinq documents légitimes sur dix signalés à tort, tous par le classifieur (`matched_rules` vide, `ml_score` entre 0,95 et 0,99). `run_redteam` affiche désormais les deux configurations côte à côte, précisément pour que ce coût soit visible :
 
 ```
-Comparaison par couche (blocage / faux positifs) :
-  Règles seules      : 100% / 0%
-  Règles + ML        : 100% / 50%
+Détail par détecteur, pris isolément :
+  Règles seules      blocage  100% [76%-100%] (12/12)   faux positifs   0% [0%-28%] (0/10)
+  Règles + ML        blocage  100% [76%-100%] (12/12)   faux positifs  50% [24%-76%] (5/10)
   --> Les faux positifs viennent du classifieur ML, pas des règles.
 ```
 
 Conséquence pratique : `InjectionDetector(use_ml=False)` est un mode de déploiement légitime, pas seulement une commodité de test. La couche de règles est déterministe, explicable et mesurée ; le classifieur, dans son état actuel, coûte plus qu'il ne rapporte sur du texte hors de son registre d'entraînement.
 
-**La porte CI vérifie maintenant les deux bouts.** Un seuil de blocage seul se satisfait d'un détecteur qui bloque tout : 100 % de recall, 100 % de faux positifs, exit 0. `MAX_FALSE_POSITIVE_RATE` ferme cette porte. Sa valeur (55 %) est un **cliquet** calé sur la mesure du jour, pas une cible — il est là pour empêcher que ça empire.
+**La porte CI vérifie les deux bouts.** Un seuil de blocage seul se satisfait d'un détecteur qui bloque tout : 100 % de recall, 100 % de faux positifs, exit 0. `MAX_FALSE_POSITIVE_RATE` (0,20) ferme cette porte. C'est un **cliquet** calé au-dessus de la mesure du jour, pas une cible — il est là pour empêcher que ça empire.
 
-**Ce corpus est trop petit.** Douze attaques, dix contrôles. Chaque payload pèse 8 points de recall. Un vrai benchmark demande des centaines de cas issus de corpus publics (AgentDojo, garak, PyRIT, `deepset/prompt-injections`) — c'est le prochain chantier de mesure, et tant qu'il n'est pas fait, le « Robustness Score » doit être lu comme un garde-fou de non-régression, pas comme une mesure de robustesse.
+**Ce corpus est trop petit, et le rapport le dit maintenant lui-même.** Douze attaques, dix contrôles : « 100 % de blocage » signifie en réalité *[76 % ; 100 %]*. `run_redteam` affiche à chaque exécution ce qu'il faudrait pour trancher — 16 attaques toutes bloquées, ou 33 en tolérant deux ratés, pour garantir statistiquement le plancher de 80 %. Un vrai benchmark demande des centaines de cas issus de corpus publics (AgentDojo, garak, PyRIT, `deepset/prompt-injections`) : c'est le chantier suivant, et tant qu'il n'est pas fait, le « Robustness Score » se lit comme un garde-fou de non-régression, pas comme une mesure de robustesse.
 
 ### Classifieur ML d'injection (section 4.2)
 
 Le classifieur ML (DistilBERT multilingue fine-tuné) apprend une corrélation de surface : le ton formel/impératif en français est associé au risque d'injection, car le corpus d'entraînement synthétique n'a exposé le modèle qu'à des messages client conversationnels comme exemples bénins -- jamais à du texte formel bénin (RGPD, documentation technique, notes internes).
 
 Mesure empirique (corpus de red-teaming, 10 contrôles bénins variés) :
-- Taux de faux positifs sur le registre "support client" (le cas d'usage réel de l'agent victime) : 0% (5/5)
-- Taux de faux positifs hors registre (RGPD, doc API, rapports, RH) : 100% (5/5)
-- Taux de faux positifs global : 50%
+
+| population | faux positifs |
+|---|---|
+| registre « support client » (le cas d'usage réel de l'agent) | **0 % [0 %-43 %]** (0/5) |
+| hors registre (RGPD, doc API, rapports, RH) | **100 % [57 %-100 %]** (5/5) |
+| ensemble | **50 % [24 %-76 %]** (5/10) |
+
+Cinq contrôles par population : les intervalles sont énormes et il faut le lire ainsi. Ce que la mesure établit, c'est l'**écart** entre les deux registres, pas la valeur précise de chacun.
+
+**Un défaut de méthode subsiste sur ce détecteur, et il n'est pas encore corrigé.** `train_injection_classifier.py` découpe train/test *par ligne* (`train_test_split(test_size=0.1)`). Or les 261 exemples français viennent de 13 appels LLM, un par style d'attaque ou thème bénin : vingt exemples issus d'une même consigne ne sont pas vingt observations indépendantes. Un découpage aléatoire place donc des tournures du même moule des deux côtés de la cloison, et la précision/rappel publiés par le script sont optimistes d'une marge inconnue.
+
+Le préalable est posé — `generate_french_examples.py` enregistre désormais le `group` (style ou thème) de chaque exemple, ce qui rend un découpage par groupe possible. Le corpus versionné, lui, a été produit avant ce changement et ne porte pas de groupe : il faut le régénérer (une clé OpenRouter est nécessaire) avant que le correctif puisse être appliqué au script d'entraînement. C'est écrit ici plutôt que corrigé à moitié — un split par groupe branché sur un corpus sans groupes retomberait silencieusement sur un split par ligne, ce qui serait pire que l'état actuel puisque le README affirmerait le contraire.
 
 Conclusion : le classifieur est fiable dans son domaine d'entraînement, mais ne généralise pas hors de ce registre. Trois cycles d'entraînement ciblés (modèle multilingue, ajout d'exemples français, diversification du registre) ont été tentés ; chacun a soit échoué à corriger le biais, soit dégradé la performance globale -- signe que le vrai correctif nécessite un volume de données d'entraînement bien supérieur à l'échelle de ce projet, pas un ajustement ponctuel. Piste retenue pour la Phase 2.1 : élargir le corpus d'entraînement à la diversité de registre réelle des documents RAG ciblés, ou pondérer le score ML comme signal d'aide à la décision plutôt que comme déclencheur de blocage automatique isolé.
 
@@ -375,24 +453,40 @@ Conclusion : le classifieur est fiable dans son domaine d'entraînement, mais ne
 
 Le Beta-VAE encode une session comme 5 événements traités indépendamment. Un premier entraînement, où chaque position de la session était tirée sans aucune contrainte sur le total, a produit un modèle incapable de détecter le cas "5 clôtures de ticket d'affilée" : chaque clôture prise isolément est un événement fréquent et banal à l'entraînement, donc rien ne signalait qu'une répétition inhabituelle sur toute la session soit suspecte. Correction appliquée : les sessions normales d'entraînement plafonnent désormais à 2 clôtures sur 5, forçant le modèle à apprendre cette régularité de fréquence.
 
-Mesure empirique (jeu d'évaluation synthétique, 60 sessions normales + 60 anormales réparties en 3 catégories) :
-- Anomalies évidentes (rafale d'outils sensibles mêlés) : détectées à 100% (20/20), très nettement séparées du normal.
-- Anomalies de fréquence (clôtures en rafale) et de permission (virement isolé) : détection partielle, environ 45% (18/40) -- les cas les plus extrêmes (montant très élevé, répétition totale) sont bien repérés, les cas proches de la frontière normal/anormal sont parfois manqués.
-- Faux positifs sur sessions normales tenues à l'écart de l'entraînement : 0% (0/60).
+Mesure sur le jeu de **test** (320 sessions : 200 normales, 120 anormales en 3 catégories), seuil calibré au préalable sur 200 sessions normales distinctes, cible 2 % de faux positifs :
 
-Conclusion : le signal fonctionne et démontre la valeur ajoutée par rapport au Policy Engine seul (qui ne verrait aucune de ces 3 catégories), mais son rappel sur les cas limites reste à améliorer -- attendu pour un modèle non supervisé entraîné sur un jeu synthétique de taille modeste, pas un signe de conception erronée. C'est pourquoi `on_session_event` journalise un score plutôt que de bloquer automatiquement (voir architecture) : un faux négatif occasionnel sur un cas limite ne doit pas donner une fausse impression de sécurité si le signal était traité comme une barrière absolue.
+| catégorie | mesure |
+|---|---|
+| rafale d'outils sensibles mêlés | rappel **100 % [91 %-100 %]** (40/40) |
+| clôtures de tickets en rafale | rappel **100 % [91 %-100 %]** (40/40) |
+| virement isolé (hijack) | rappel **88 % [74 %-95 %]** (35/40) |
+| toutes anomalies | rappel **96 % [91 %-98 %]** (115/120) |
+| sessions normales | faux positifs **2 % [1 %-4 %]** (3/200) |
+
+Ces chiffres sont meilleurs que ceux publiés auparavant (« 45 % de rappel sur les cas de fréquence, 0 % de faux positifs »), et il faut dire pourquoi : l'ancien seuil était calculé sur le jeu d'évaluation lui-même, à trois écarts-types, ce qui le plaçait très haut — d'où le rappel médiocre ET le « 0 % » de faux positifs, deux conséquences du même artefact. Calibré à 2 % de faux positifs sur un jeu distinct, le même modèle attrape presque tout. Le gain vient de la méthode de mesure, pas d'un changement du modèle.
+
+Le rappel reste imparfait sur le virement isolé, et c'est cohérent : un virement unique noyé dans quatre actions banales ressemble davantage à une session normale qu'une rafale. Le Policy Engine le bloque de toute façon en amont — le VAE est ici une couche de secours indépendante, pas la barrière principale. `on_session_event` journalise un score et ne bloque rien : à 2 % de faux positifs, bloquer reviendrait à refuser une session légitime sur cinquante.
 
 ### Détecteur d'outliers RAG (section 4.5)
 
 Simplification assumée dès la conception : TF-IDF (comptage de mots pondéré) plutôt que de vrais embeddings de phrases (sentence-transformers, prévu section 5 du blueprint) -- une notion de "sens" plus grossière, mais qui ne nécessite aucun téléchargement de modèle et reste entièrement testable sans accès réseau.
 
-Mesure empirique (30 documents normaux tenus à l'écart + 9 documents anormaux : 4 attaques réelles du corpus de red-teaming, 5 documents hors-registre mais légitimes) :
-- Un premier seuil (moyenne + 3 écarts-types, par cohérence avec le VAE comportemental) ne détectait que 3/9 cas anormaux. Resserré à 2 écarts-types après comparaison sur le même jeu d'évaluation : 8/9 détectés, toujours 0 faux positif sur le normal.
-- Les documents hors-registre mais légitimes (RGPD, doc API...) ressortent également comme outliers -- attendu, puisqu'ils sont sémantiquement loin du domaine "support client" appris, mais à garder en tête : ce détecteur signale "inhabituel", pas "malveillant". Les deux ne sont pas synonymes.
+Mesure sur le jeu de **test** (92 documents : 72 normaux du domaine, 6 légitimes hors-domaine, 14 attaques), seuil calibré sur 78 documents légitimes distincts, cible 5 % de faux positifs :
 
-Conclusion : comme les deux autres détecteurs ML du projet, la valeur du signal a été mesurée plutôt que supposée, et le compromis retenu (seuil, sensibilité) est documenté plutôt qu'arbitraire.
+| population | mesure |
+|---|---|
+| attaques | rappel **86 % [60 %-96 %]** (12/14) |
+| documents du domaine | faux positifs **0 % [0 %-5 %]** (0/72) |
+| **documents légitimes hors-domaine** | faux positifs **50 % [19 %-81 %]** (3/6) |
+| tous documents légitimes | faux positifs **4 % [1 %-11 %]** (3/78) |
 
-Conséquence visible dans le laboratoire de robustesse du dashboard (`/api/test-document`) : certains documents "légitimes" du corpus de red-teaming (ex. bulletin météo, rapport financier -- volontairement hors du registre support client, voir `redteam/payloads.py`) peuvent ressortir comme neutralisés même en choisissant "Document légitime". Ce n'est pas un faux positif au sens attaque/pas-attaque, mais l'illustration directe de la limite ci-dessus.
+**La troisième ligne est le vrai constat.** Ce détecteur mesure un écart de registre, pas une attaque : il signale la moitié des documents parfaitement légitimes qui ne relèvent pas du support client — un texte universitaire, une note logistique. C'est structurel, pas un réglage à affiner : un centroïde TF-IDF appris sur un seul domaine ne peut rien dire d'autre que « ceci ne ressemble pas à ce que j'ai vu ».
+
+Ce constat était auparavant inversé dans le corpus lui-même : ces documents portaient le label `anomalous`, donc les neutraliser comptait comme une réussite et gonflait le « 89 % de rappel » annoncé. Corrigé au lot 5A — ils portent désormais le label `normal`, et entrent dans la calibration du seuil, ce qui l'a d'ailleurs remonté (la mention RGPD qui servait d'exemple n'est plus signalée).
+
+C'est précisément pourquoi ce signal n'a pas le droit de bloquer seul (`AegisConfig.blocking_signals`). Il tire, il est journalisé, il alimente `would_have_blocked` — et le pipeline complet affiche 0 % de faux positifs là où ce détecteur seul en affiche 50 % sur le hors-domaine.
+
+Conséquence visible dans le laboratoire de robustesse du dashboard (`/api/test-document`) : certains documents légitimes du corpus de red-teaming (bulletin météo, rapport financier) ressortent comme signalés par ce détecteur. C'est bien un faux positif — neutraliser un bulletin météo prive le client d'une réponse à laquelle il avait droit — et c'est l'illustration directe de la ligne ci-dessus.
 
 ### Citation obligatoire de la source (section 4.5)
 
@@ -442,10 +536,11 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Analyse des retours d'outils (`on_tool_result`) | ✅ Lot 3C — neutralisation + masquage PII |
 | Détection d'injection | ✅ V0 heuristique (regex) + Phase 2 ML (DistilBERT multilingue fine-tuné, ensemble regex+ML) -- voir "Limites connues" |
 | Journal d'audit signé | ✅ SQLite + chaînage SHA-256 + signatures Ed25519 par entrée, triggers SQLite append-only, pseudonymisation et coffre effaçable (RGPD art. 17) -- Postgres en V1 |
+| Discipline de mesure | ✅ Lot 5A — split train/calibration/test par gabarit, détection de fuite bloquante, seuils calibrés hors du test, intervalles de Wilson, latences publiées |
 | Isolation de l'état par session | ✅ Lot 4B — clé `(tenant, agent, session_id)`, bornée en taille et dans le temps, dégradation déclarée |
 | Détection d'anomalies comportementales (VAE) | ✅ Phase 2 (Beta-VAE, détection partielle sur cas limites -- voir "Limites connues") |
 | Durcissement RAG (filtre PII/secrets, outliers embeddings) | ✅ Phase 3 : outliers d'embeddings (TF-IDF, voir limites) + citation obligatoire + assainissement PII/secrets par regex (voir limites) |
-| Red-teaming automatisé | ✅ V0 fonctionnelle, corpus enrichi (10 contrôles bénins diversifiés) |
+| Red-teaming automatisé | ✅ V0 fonctionnelle, corpus enrichi (10 contrôles bénins diversifiés), taux publiés avec intervalle de confiance -- corpus encore trop petit pour conclure (voir limites) |
 | Dashboard SOC | ✅ V1 (dashboard Next.js interactif, comparaison protégé/non-protégé) -- alerting et historique en Phase 5 |
 
 ## En une phrase

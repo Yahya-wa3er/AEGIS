@@ -50,9 +50,17 @@ def test_on_retrieval_leaves_clean_content_untouched():
     assert result[0].content == "Merci pour votre commande."
 
 
+# Document parfaitement légitime, d'un autre registre que le support client, et
+# que le détecteur d'outliers signale TOUJOURS après le correctif de corpus
+# (lot 5A) -- il en signale encore la moitié, mesuré à 50 % [19 %-81 %] sur le
+# jeu de test. C'est précisément pour ça que ce signal n'a pas le droit de
+# décider seul.
+#
+# La mention RGPD qui servait ici auparavant n'est plus signalée : le jeu de
+# calibration contient désormais des documents légitimes hors-domaine, ce qui a
+# remonté le seuil. Le test suit la mesure, pas l'inverse.
 _LEGITIMATE_OUT_OF_DOMAIN = (
-    "Conformément au RGPD, vous pouvez demander la suppression de vos données "
-    "personnelles à tout moment."
+    "Les étudiants boursiers bénéficient d'une exonération des droits d'inscription."
 )
 
 
@@ -60,24 +68,23 @@ _LEGITIMATE_OUT_OF_DOMAIN = (
 def test_outlier_signal_alone_does_not_neutralize_a_legitimate_document():
     """Ce test disait exactement l'inverse, et c'était une erreur de lecture.
 
-    Il s'intitulait « démontre l'apport du détecteur d'outliers » et vérifiait que
-    cette phrase était neutralisée. Or c'est une mention RGPD parfaitement
-    légitime : la neutraliser n'est pas une détection, c'est un **faux positif**
-    -- célébré comme une fonctionnalité.
+    Il s'intitulait « démontre l'apport du détecteur d'outliers » et vérifiait
+    qu'un document légitime hors-domaine était neutralisé. Le neutraliser n'est
+    pas une détection, c'est un **faux positif** -- célébré comme une
+    fonctionnalité.
 
-    La mesure l'a confirmé : sur les dix documents de contrôle du corpus de
-    red-teaming, le détecteur d'outliers en signale cinq, tous bénins (rapport
-    financier, bulletin météo, documentation d'API, note RH, cette mention
-    RGPD). Le « 0 % de faux positifs » annoncé avait été mesuré sur trente
-    documents issus du MÊME générateur que le corpus d'entraînement -- c'est-à-
-    dire sur sa propre distribution.
+    Le « 0 % de faux positifs » annoncé à l'époque avait été mesuré sur trente
+    documents issus du MÊME générateur que le corpus d'entraînement, avec un
+    seuil calculé sur ces trente documents. Sur un jeu de test réellement tenu à
+    l'écart (lot 5A), le taux de faux positifs sur les documents légitimes
+    hors-domaine est de **50 % [19 %-81 %]**.
 
     Le signal n'est pas supprimé pour autant : il tire, il est journalisé, et il
     alimente `would_have_blocked`. Il n'a simplement plus le droit de décider
     seul (voir `AegisConfig.blocking_signals`).
     """
     guard = AegisGuard()
-    chunks = [FakeChunk(id="doc-rgpd.txt", content=_LEGITIMATE_OUT_OF_DOMAIN)]
+    chunks = [FakeChunk(id="doc-universite.txt", content=_LEGITIMATE_OUT_OF_DOMAIN)]
     result = guard.on_retrieval(chunks, {"agent": "SupportAgent"})
 
     assert result[0].content != NEUTRALIZED_PLACEHOLDER
@@ -95,7 +102,7 @@ def test_outlier_signal_can_be_given_blocking_power_explicitly():
     from aegis_core.config import AegisConfig
 
     guard = AegisGuard(config=AegisConfig(blocking_signals=frozenset({"rules", "rag_outlier"})))
-    chunks = [FakeChunk(id="doc-rgpd.txt", content=_LEGITIMATE_OUT_OF_DOMAIN)]
+    chunks = [FakeChunk(id="doc-universite.txt", content=_LEGITIMATE_OUT_OF_DOMAIN)]
     result = guard.on_retrieval(chunks, {"agent": "SupportAgent"})
 
     assert result[0].content == NEUTRALIZED_PLACEHOLDER
