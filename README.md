@@ -437,6 +437,40 @@ python demo.py
 
 Scénario : un client interroge son ticket de support (#48291), dont le document contient une injection cachée. Sans AEGIS, le LLM exécute réellement le virement et la fuite de données tout en répondant normalement au client. Avec AEGIS, le document est neutralisé avant même d'atteindre le LLM -- l'agent reste utile (il peut toujours clôturer le ticket, une action autorisée) mais l'attaque échoue. Le scan comportemental de cette requête est affiché en fin de scénario protégé.
 
+## La console
+
+```bash
+cd frontend && npm run build && cd ..
+python -m uvicorn web.app:app --reload
+```
+
+Quatre onglets, et un seul dépend d'un service externe.
+
+| onglet | ce qu'il montre | appel LLM |
+|---|---|---|
+| **Banc de scénarios** | 12 situations sur les 5 points d'interception, le signal qui a tiré, celui qui avait le droit de décider | non |
+| **Analyse de document** | l'arbitrage réel appliqué à un texte collé par le visiteur | non |
+| **Laboratoire de classement** | les deux classements côte à côte, document hostile injecté à la volée | non |
+| **Simulation complète** | l'agent réel, avec et sans protection | oui |
+
+Trois écrans sur quatre fonctionnent sans clé d'API : la partie du produit qui décide ne dépend d'aucun service externe, et la console doit pouvoir le montrer plutôt que l'affirmer.
+
+### Ce que la console refuse de faire
+
+**Pas de vert sur un capteur débranché.** Trois états distincts et jamais confondus : le signal a tiré, le signal s'est tu, le capteur est éteint. Un point vert sur un détecteur muet laisserait croire à une vérification qui n'a pas eu lieu — l'anti-pattern qui avait fait afficher « ✔ Comportement jugé normal » pour un modèle non entraîné.
+
+**Pas de score sans son seuil.** Le TTR s'affiche avec la bande attendue pour cette longueur. « 0,549 » ne veut rien dire ; « 0,549 pour une bande [0,469 ; 0,678] » explique le verdict, y compris quand ce verdict est « je n'ai rien vu ».
+
+**Pas de chiffre en dur.** Les valeurs affichées viennent de l'exécution en cours. Une première version du banc affichait un TTR figé dans le texte pédagogique qui divergeait de la mesure vive de 0,014 — corrigé avant livraison.
+
+**Pas de démonstration truquée.** Le laboratoire de classement présente un **arbitrage**, pas un avant/après flatteur : sur un corpus réaliste, l'ancien classement résiste mieux au bourrage que celui en production, et la console le dit quand c'est le cas. Le sélecteur de corpus (2 documents contre 14) sert à montrer que la conclusion d'une mesure de classement dépend de la taille du corpus.
+
+### Structure
+
+`page.tsx` faisait 1052 lignes : types, appels réseau, formatage, mascotte animée et rendu au même endroit. Découpé en `lib/` (types, API, formatage) et `components/` — le fichier de page en fait 133, et aucun module ne dépasse 310 lignes.
+
+Aucune police distante : `next/font/google` faisait échouer le build hors ligne et derrière un proxy. Les piles système rendent la construction hermétique.
+
 ## Lancer le dashboard web
 
 ```bash

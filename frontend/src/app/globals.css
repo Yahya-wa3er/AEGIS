@@ -1,21 +1,120 @@
 @import "tailwindcss";
 
+/*
+  Console SOC — jeu de jetons.
+
+  Fond très sombre, surfaces légèrement remontées, accents rares. Le principe
+  directeur : la couleur porte du SENS, elle ne décore pas. Trois teintes de
+  verdict (sûr / consultatif / bloqué), une teinte d'accent pour l'interaction,
+  et rien d'autre. Un tableau de bord de sécurité où tout est coloré est un
+  tableau de bord où plus rien ne ressort.
+
+  Contrastes vérifiés sur `--bg` : texte ~15:1, `--muted` ~7:1, chaque accent
+  au-dessus de 4,5:1. Un opérateur lit ça pendant des heures.
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #070a0f;
+  --surface: #0d131c;
+  --surface-2: #131b26;
+  --surface-3: #1a2432;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  --text: #e6edf5;
+  --muted: #8b9bb0;
+  --faint: #5d6b7d;
+
+  --accent: #35d6e8;   /* interaction, sélection */
+  --ok: #3ddc84;       /* sûr, vérifié */
+  --warn: #f5b544;     /* consultatif, dégradé */
+  --danger: #ff5f56;   /* bloqué, compromis */
+  --advisory: #a78bfa; /* signal qui observe sans décider */
+
+  --grid: rgba(53, 214, 232, 0.05);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-advisory: var(--advisory);
+
+  /* Piles système : aucune requête réseau au chargement.
+     `next/font/google` faisait échouer le build hors ligne (et en CI derrière
+     un proxy). Une console qui ne se construit pas sans accès à Google Fonts
+     est fragile pour rien. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
+    "Cascadia Code", Menlo, Consolas, monospace;
 }
 
-
+html {
+  color-scheme: dark;
+}
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  /* Trame discrète : de la profondeur sans attirer l'œil. */
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 48px 48px, 48px 48px;
+  background-attachment: fixed;
+}
+
+/* Chiffres alignés en colonne : indispensable dès qu'on compare des scores. */
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: rgba(53, 214, 232, 0.28);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #24313f;
+}
+
+/* Balayage d'une barre indéterminée — un scan en cours. */
+@keyframes aegis-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: aegis-sweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sweep::after {
+    animation: none;
+  }
 }

@@ -1,29 +1,19 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "AEGIS — Zero-Trust Security Console",
+  title: "AEGIS — Console Zero-Trust",
   description:
     "Couche de sécurité zero-trust pour agents IA et RAG : neutralisation des injections de prompt, moindre privilège sur les appels d'outils, journal d'audit signé.",
 };
 
+// Aucune police distante. `next/font/google` téléchargeait Geist au build :
+// hors ligne — ou derrière un proxy, comme en CI — la construction échouait sur
+// « Failed to fetch Geist from Google Fonts ». Les piles système déclarées dans
+// globals.css rendent le build hermétique et le premier rendu instantané.
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="fr"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
+    <html lang="fr" className="h-full antialiased">
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

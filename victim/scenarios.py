@@ -234,10 +234,11 @@ SCENARIOS: tuple[Scenario, ...] = (
         attendu="Le document est neutralisé par les RÈGLES (la charge est visible), mais "
                 "l'intégrité du classement ne le voit pas : c'est l'évasion, et c'est le "
                 "point du scénario.",
-        regarder="TTR = 0,535 pour 437 mots, quand la prose réelle de même longueur va de "
-                 "0,474 à 0,684. Un adversaire qui connaît le contrôle le contourne : "
-                 "c'est pour ça que ce signal est consultatif et non bloquant. "
-                 "L'injection, elle, reste bloquée par les règles.",
+        regarder="Le TTR mesuré ci-dessus tombe DANS la bande du français réel de même "
+                 "longueur : le document est indistinguable d'une prose ordinaire. Un "
+                 "adversaire qui connaît le contrôle le contourne — c'est pour ça que ce "
+                 "signal est consultatif et non bloquant. L'injection, elle, reste bloquée "
+                 "par les règles.",
         tags=("classement", "bourrage", "evasion-connue"),
     ),
     # -- excès de pouvoir ---------------------------------------------------

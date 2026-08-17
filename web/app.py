@@ -287,6 +287,7 @@ class RankedDocument(BaseModel):
     id: str
     score: float
     apercu: str
+    rang: int
     injecte: bool = False
 
 
@@ -298,6 +299,8 @@ class RankingComparison(BaseModel):
     """
 
     requete: str
+    corpus: str
+    taille_corpus: int
     bm25: list[RankedDocument]
     overlap: list[RankedDocument]
     document_injecte: str | None = None
@@ -334,42 +337,71 @@ def run_scenario(scenario_id: str) -> ScenarioRun:
     return ScenarioRun(**{**resultat, "ecarts": ecarts(resultat)})
 
 
+# Les deux seuls documents du corpus d'origine. Les garder nommés permet de
+# rejouer la mesure historique : c'est sur CE corpus que le recouvrement brut
+# faisait remonter le ticket piégé pour le seul mot « Bonjour », et c'est aussi
+# sur lui que BM25 donnait une conclusion inverse de celle du corpus réel.
+CORPUS_ORIGINE = ("doc1_clean.txt", "doc2_poisoned.txt")
+
+
 @app.get("/api/ranking", response_model=RankingComparison)
 def compare_ranking(
     requete: str,
     injecte: str | None = None,
+    corpus: str = "complet",
     limite: int = 6,
 ) -> RankingComparison:
     """Classement de `requete` sous BM25 et sous l'ancien recouvrement brut.
 
-    `injecte` permet d'ajouter un document hostile au corpus le temps d'une
-    requête -- sans jamais l'écrire sur disque. C'est ce qui rend l'attaque
-    par bourrage rejouable depuis l'interface.
+    `injecte` ajoute un document hostile au corpus le temps d'une requête, sans
+    jamais l'écrire sur disque : c'est ce qui rend l'attaque rejouable depuis
+    l'interface.
+
+    `corpus` vaut `complet` (14 documents) ou `origine` (les 2 documents de la
+    première version). Le second n'est pas là pour la nostalgie : la conclusion
+    d'une mesure de classement dépend de la taille du corpus, et pouvoir basculer
+    entre les deux montre cette dépendance mieux qu'un paragraphe.
     """
     if not requete.strip():
         raise HTTPException(status_code=400, detail="Requête vide.")
+    if corpus not in ("complet", "origine"):
+        raise HTTPException(status_code=400, detail="corpus doit valoir 'complet' ou 'origine'.")
     if injecte is not None and len(injecte) > MAX_DOCUMENT_CHARS:
         injecte = injecte[:MAX_DOCUMENT_CHARS]
 
     documents = rag.load_documents()
+    if corpus == "origine":
+        documents = [d for d in documents if d.id in CORPUS_ORIGINE]
+
     injecte_id = None
     if injecte:
         injecte_id = "document-injecte.txt"
         documents = documents + [rag.Document(id=injecte_id, content=injecte)]
 
     def classe(nom: str) -> list[RankedDocument]:
-        return [
+        classement = rag.rank(requete, documents=documents, ranker=nom)
+        lignes = [
             RankedDocument(
                 id=s.id,
                 score=round(s.score, 4),
                 apercu=s.document.content[:120].replace("\n", " "),
+                rang=i + 1,
                 injecte=s.id == injecte_id,
             )
-            for s in rag.rank(requete, documents=documents, ranker=nom)[:limite]
+            for i, s in enumerate(classement)
         ]
+        tete = lignes[:limite]
+        # Le document injecté est TOUJOURS montré, même hors du haut de tableau :
+        # « il n'apparaît pas » et « il est 11e » ne se lisent pas pareil, et la
+        # seconde formulation est la seule qui informe.
+        if injecte_id and not any(l.injecte for l in tete):
+            tete = tete + [l for l in lignes if l.injecte]
+        return tete
 
     return RankingComparison(
         requete=requete,
+        corpus=corpus,
+        taille_corpus=len(documents),
         bm25=classe("bm25"),
         overlap=classe("overlap"),
         document_injecte=injecte_id,
