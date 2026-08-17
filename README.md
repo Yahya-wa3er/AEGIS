@@ -261,7 +261,19 @@ Un document long a mécaniquement plus de vocabulaire, donc plus de recouvrement
 
 `victim/rag.py` passe à **BM25** : saturation de la fréquence (`k1`) et normalisation par la longueur (`b`). Répéter un mot dix fois ne vaut plus dix occurrences, et un document deux fois plus long doit être deux fois plus pertinent pour obtenir le même score.
 
-Une mesure intermédiaire mérite d'être racontée, parce qu'elle a failli me faire livrer l'inverse d'un correctif. Sur le corpus d'origine — **deux documents** — BM25 faisait *gagner* l'attaquant 5 requêtes sur 7 là où l'ancien classement lui en faisait gagner 0. À trois documents, l'IDF est dégénérée : tout terme est rare, donc tout terme pèse. La conclusion s'inverse sur un corpus de taille réaliste (14 documents) : BM25 y est meilleur en pertinence (7/10 contre 5/10) et comparable en robustesse. **Mesurer sur un corpus trop petit produit une conclusion fausse avec la même assurance qu'une vraie mesure** — c'est la même erreur que la fuite du jeu de test, sous un autre habit.
+Deux mesures intermédiaires méritent d'être racontées, parce qu'elles ont chacune failli me faire livrer l'inverse d'un correctif.
+
+**La première.** Sur le corpus d'origine — **deux documents** — BM25 faisait *gagner* l'attaquant 5 requêtes sur 7 là où l'ancien classement lui en faisait gagner 0. À trois documents, l'IDF est dégénérée : tout terme est rare, donc tout terme pèse. La conclusion s'inverse sur un corpus de taille réaliste. **Mesurer sur un corpus trop petit produit une conclusion fausse avec la même assurance qu'une vraie mesure** — c'est la fuite du jeu de test sous un autre habit.
+
+**La seconde.** Sur le corpus réaliste, BM25 restait *moins* robuste que l'ancien classement : la saturation freine la répétition, elle ne la borne pas, et la fréquence est exactement ce que l'attaquant contrôle. Le recouvrement brut, lui, dédoublonne — il est accidentellement immunisé contre la répétition, et inutile pour classer. D'où un troisième garde-fou : un **plafond de fréquence** à deux occurrences par terme.
+
+| classement | pertinence | attaquant en tête |
+|---|---|---|
+| `overlap` (origine) | 5/10 | **0/40** |
+| BM25 sans plafond | **8/10** | 3/40 |
+| **BM25 + plafond (retenu)** | **8/10** | **1/40** |
+
+Mesuré sur 4 familles de bourrage × 10 requêtes. Le plafond conserve tout le gain de pertinence et supprime deux tiers des bourrages réussis. Il reste une requête sur quarante : un bourrage court et *ciblé* sur les mots exacts d'une requête anticipée. BM25 reste un sac de mots — c'est écrit dans les limites connues, pas gommé.
 
 Le corpus de démonstration compte donc désormais **quatorze documents légitimes** de registres variés, et les attaques n'y vivent plus : elles sont plantées à la demande par les scénarios, comme un ticket hostile qui arrive.
 
@@ -570,7 +582,7 @@ Trois limites, toutes mesurées.
 
 **L'évasion hybride n'est pas couverte.** Détaillée plus haut : un bourrage qui mélange répétition et vocabulaire neuf reste dans la bande du français réel. Le test qui la fige est `test_hybrid_stuffing_evades_detection`.
 
-**BM25 reste un sac de mots.** Un attaquant qui anticipe la requête exacte et rembourre avec ses mots peut encore remonter. La mesure retenue n'est d'ailleurs pas « l'attaquant ne gagne jamais » mais « il ne gagne pas toutes les requêtes » — c'est ce que le test vérifie, parce que c'est ce qui est vrai.
+**BM25 reste un sac de mots.** Même avec le plafond de fréquence, un attaquant qui anticipe la requête exacte et rembourre avec ses mots remonte encore : 1 cas sur 40 dans la mesure, et c'est précisément le bourrage court et ciblé. La mesure retenue n'est d'ailleurs pas « l'attaquant ne gagne jamais » mais « il ne gagne pas toutes les requêtes » — c'est ce que le test vérifie, parce que c'est ce qui est vrai.
 
 **Le contexte n'est pas plafonné.** La défense de fond contre la manipulation de classement n'est pas de détecter le bourrage, c'est de faire en sorte que gagner le premier rang ne donne pas la totalité du contexte : récupérer plusieurs documents et borner la part de chacun. `victim/agent.py` récupère toujours `top_k=1`. Tant que c'est le cas, un attaquant qui gagne le classement gagne tout le contexte, détecté ou non.
 

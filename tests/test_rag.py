@@ -110,3 +110,35 @@ def test_the_corpus_is_large_enough_to_be_a_corpus():
     """Deux documents ne font pas un index : avec si peu, l'IDF est dégénérée et
     toute mesure de classement est un artefact."""
     assert len(rag.load_documents()) >= 12
+
+
+def test_frequency_cap_limits_what_the_attacker_controls():
+    """La fréquence est ce que l'attaquant contrôle : au-delà de deux
+    occurrences, les suivantes ne doivent plus rien rapporter.
+
+    Sans ce plafond, BM25 laissait passer trois bourrages sur quarante là où
+    l'ancien classement n'en laissait passer aucun — la saturation freine la
+    répétition, elle ne la borne pas.
+    """
+    docs = [
+        rag.Document("normal.txt", "Le delai de livraison est de trois jours ouvres."),
+        rag.Document("bourre.txt", "delai " * 30 + "livraison " * 30),
+    ]
+    sans_plafond = rag.bm25_score("delai livraison", docs, tf_cap=None)
+    avec_plafond = rag.bm25_score("delai livraison", docs, tf_cap=2)
+
+    # Le document bourré perd, en valeur absolue, à cause du plafond.
+    assert avec_plafond[1] < sans_plafond[1]
+    # Et son avance sur le document légitime se réduit.
+    assert (avec_plafond[1] - avec_plafond[0]) < (sans_plafond[1] - sans_plafond[0])
+
+
+def test_the_cap_does_not_hurt_a_legitimate_document():
+    """Un document qui répète naturellement son sujet deux ou trois fois ne doit
+    pas être pénalisé : le plafond vise la fabrication, pas le style."""
+    docs = rag.load_documents()
+    plafonne = rag.bm25_score("comment retourner un article", docs, tf_cap=2)
+    libre = rag.bm25_score("comment retourner un article", docs, tf_cap=None)
+    gagnant_plafonne = docs[max(range(len(docs)), key=lambda i: plafonne[i])].id
+    gagnant_libre = docs[max(range(len(docs)), key=lambda i: libre[i])].id
+    assert gagnant_plafonne == gagnant_libre == "procedure_retour.txt"

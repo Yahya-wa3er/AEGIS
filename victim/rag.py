@@ -36,11 +36,21 @@ BM25, et pourquoi ça n'efface pas complètement le problème
 * **normalisation par la longueur** (`b`) -- un document deux fois plus long doit
   être deux fois plus pertinent pour obtenir le même score.
 
-Le bourrage devient donc coûteux au lieu d'être gratuit. Il ne devient pas
-impossible : BM25 reste un modèle de sac de mots, et un attaquant qui rembourre
-avec les mots *exacts* d'une requête qu'il anticipe peut encore remonter. La
-mesure du gain est dans `tests/test_rag.py` ; la limite résiduelle est au README
-plutôt que passée sous silence.
+Ces deux corrections ne suffisaient pas, et la mesure l'a montré : BM25 seul
+laissait l'attaquant prendre la tête sur 3 requêtes sur 40 là où l'ancien
+classement n'en laissait passer aucune. La saturation freine la répétition, elle
+ne la borne pas -- et la fréquence est précisément ce que l'attaquant contrôle.
+
+D'où un troisième garde-fou, `BM25_TF_CAP` : au-delà de deux occurrences d'un
+même terme, les suivantes ne comptent plus. Un document n'est pas « davantage à
+propos » d'un sujet parce qu'il en répète le mot huit fois. Mesure complète dans
+le commentaire de la constante ; le résultat tient en une ligne : toute la
+pertinence de BM25, et deux tiers des bourrages en moins.
+
+Le bourrage ne devient pas impossible pour autant. BM25 reste un sac de mots, et
+un attaquant qui rembourre avec les mots *exacts* d'une requête qu'il anticipe
+peut encore remonter -- une requête sur quarante dans la mesure. La limite est au
+README plutôt que passée sous silence.
 
 L'ancien classement n'est pas supprimé
 --------------------------------------
@@ -66,6 +76,23 @@ _TOKEN_RE = re.compile(r"[a-z0-9àâäéèêëïîôöùûüçñ]+")
 # valeur de référence ; c'est elle qui rend le bourrage coûteux.
 BM25_K1 = 1.5
 BM25_B = 0.75
+
+# Plafond de fréquence par terme, ajouté au lot 6.1 après mesure.
+#
+# BM25 sature la fréquence, mais ne la borne pas : répéter un terme continue de
+# rapporter, avec des gains décroissants. Or la fréquence est exactement ce que
+# l'attaquant contrôle. Mesuré sur 4 familles de bourrage × 10 requêtes :
+#
+#     classement                    pertinence   attaquant en tête
+#     overlap (origine)                 5/10          0/40
+#     bm25 sans plafond                 8/10          3/40
+#     bm25 avec plafond (2)             8/10          1/40
+#
+# Au-delà de deux occurrences, un document n'est pas « davantage à propos » du
+# terme : la répétition supplémentaire ne profite plus qu'à celui qui la
+# fabrique. Le plafond conserve donc tout le gain de pertinence de BM25 et rend
+# les deux tiers des bourrages inopérants.
+BM25_TF_CAP = 2
 
 
 @dataclass(frozen=True)
@@ -129,8 +156,9 @@ def bm25_score(
     documents: list[Document],
     k1: float = BM25_K1,
     b: float = BM25_B,
+    tf_cap: int | None = BM25_TF_CAP,
 ) -> list[float]:
-    """Classement BM25 : fréquence saturée, longueur normalisée.
+    """Classement BM25 : fréquence saturée **et plafonnée**, longueur normalisée.
 
     L'IDF employée est la variante « probabiliste » de Robertson/Sparck-Jones,
     bornée à zéro : un terme présent dans plus de la moitié des documents
@@ -156,6 +184,8 @@ def bm25_score(
             occurrences = freq.get(term, 0)
             if not occurrences:
                 continue
+            if tf_cap is not None:
+                occurrences = min(occurrences, tf_cap)
             norm = 1 - b + b * (lengths[i] / avg_length)
             scores[i] += idf * (occurrences * (k1 + 1)) / (occurrences + k1 * norm)
     return scores

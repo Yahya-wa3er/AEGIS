@@ -24,7 +24,9 @@ from aegis_core.middleware import AegisGuard
 from aegis_core.pii_detector import PiiDetector
 from aegis_core.rag_outlier_detector import RagOutlierDetector
 from redteam.payloads import PAYLOADS
+from redteam.run_scenarios import ecarts, joue
 from victim import rag, tools
+from victim.scenarios import SCENARIOS, SCENARIOS_PAR_ID, familles
 from victim.agent import VictimAgent
 
 logger = logging.getLogger("web.app")
@@ -251,6 +253,126 @@ def simulate(mode: str) -> SimulationResult:
         audit_log=audit_log,
         robustness_report=report,
         behavior_scan=behavior_scan,
+    )
+
+
+class ScenarioSummary(BaseModel):
+    """Un scénario tel que l'interface le liste, sans le contenu du document."""
+
+    id: str
+    titre: str
+    famille: str
+    owasp: str
+    requete: str
+    attendu: str
+    regarder: str
+    est_attaque: bool
+    tags: list[str]
+
+
+class ScenarioRun(BaseModel):
+    """Ce qu'a fait AEGIS sur ce scénario, et par quel point d'interception."""
+
+    scenario: dict
+    point: str
+    verdict: str
+    prompt: dict
+    document: dict | None = None
+    outil: dict | None = None
+    details: dict = {}
+    ecarts: list[str] = []
+
+
+class RankedDocument(BaseModel):
+    id: str
+    score: float
+    apercu: str
+    injecte: bool = False
+
+
+class RankingComparison(BaseModel):
+    """Classement d'une requête sous les deux algorithmes, côte à côte.
+
+    C'est la démonstration du correctif du lot 6 : le même corpus, la même
+    requête, et un attaquant qui gagne ou perd selon la façon dont on classe.
+    """
+
+    requete: str
+    bm25: list[RankedDocument]
+    overlap: list[RankedDocument]
+    document_injecte: str | None = None
+
+
+@app.get("/api/scenarios", response_model=dict)
+def list_scenarios() -> dict:
+    """Catalogue du banc de scénarios (lot 6), pour le sélecteur de l'interface."""
+    return {
+        "familles": familles(),
+        "scenarios": [
+            ScenarioSummary(
+                id=s.id, titre=s.titre, famille=s.famille, owasp=s.owasp,
+                requete=s.requete, attendu=s.attendu, regarder=s.regarder,
+                est_attaque=s.est_attaque, tags=list(s.tags),
+            ).model_dump()
+            for s in SCENARIOS
+        ],
+    }
+
+
+@app.post("/api/scenarios/{scenario_id}/run", response_model=ScenarioRun)
+def run_scenario(scenario_id: str) -> ScenarioRun:
+    """Rejoue un scénario par son point d'interception, **sans appel LLM**.
+
+    C'est le mode « analyse » décrit dans `victim/scenarios.py` : la partie du
+    produit qui décide ne dépend d'aucun service externe, et l'interface doit
+    pouvoir le montrer même sans clé d'API configurée.
+    """
+    scenario = SCENARIOS_PAR_ID.get(scenario_id)
+    if scenario is None:
+        raise HTTPException(status_code=404, detail=f"Scénario inconnu : {scenario_id}")
+    resultat = joue(scenario)
+    return ScenarioRun(**{**resultat, "ecarts": ecarts(resultat)})
+
+
+@app.get("/api/ranking", response_model=RankingComparison)
+def compare_ranking(
+    requete: str,
+    injecte: str | None = None,
+    limite: int = 6,
+) -> RankingComparison:
+    """Classement de `requete` sous BM25 et sous l'ancien recouvrement brut.
+
+    `injecte` permet d'ajouter un document hostile au corpus le temps d'une
+    requête -- sans jamais l'écrire sur disque. C'est ce qui rend l'attaque
+    par bourrage rejouable depuis l'interface.
+    """
+    if not requete.strip():
+        raise HTTPException(status_code=400, detail="Requête vide.")
+    if injecte is not None and len(injecte) > MAX_DOCUMENT_CHARS:
+        injecte = injecte[:MAX_DOCUMENT_CHARS]
+
+    documents = rag.load_documents()
+    injecte_id = None
+    if injecte:
+        injecte_id = "document-injecte.txt"
+        documents = documents + [rag.Document(id=injecte_id, content=injecte)]
+
+    def classe(nom: str) -> list[RankedDocument]:
+        return [
+            RankedDocument(
+                id=s.id,
+                score=round(s.score, 4),
+                apercu=s.document.content[:120].replace("\n", " "),
+                injecte=s.id == injecte_id,
+            )
+            for s in rag.rank(requete, documents=documents, ranker=nom)[:limite]
+        ]
+
+    return RankingComparison(
+        requete=requete,
+        bm25=classe("bm25"),
+        overlap=classe("overlap"),
+        document_injecte=injecte_id,
     )
 
 
