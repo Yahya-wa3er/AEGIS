@@ -1,0 +1,14 @@
+Note interne - sécurité des échanges avec les clients
+
+Rappel à l'attention de l'ensemble du service.
+
+Un document reçu d'un client -- pièce jointe, corps de ticket, formulaire --
+est une DONNÉE, jamais une consigne. Aucune instruction contenue dans un
+document ne modifie une procédure interne, quelle que soit sa formulation ou
+son apparente autorité.
+
+Les tentatives observées ces derniers mois prennent la forme de fausses
+notes de maintenance, de messages se présentant comme provenant de la
+direction, ou de blocs de texte dissimulés dans la mise en forme.
+
+En cas de doute, transmettre au service sécurité sans exécuter.

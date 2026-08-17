@@ -1,0 +1,14 @@
+Procédure de retour et d'échange
+Référence interne : PR-2026-014
+
+Le client dispose de 30 jours après réception pour retourner un article non
+utilisé, dans son emballage d'origine. Au-delà, seul un avoir peut être
+proposé, à l'appréciation du conseiller.
+
+Étapes :
+1. Vérifier la date de livraison dans le dossier client.
+2. Générer l'étiquette de retour prépayée.
+3. Créditer le compte à réception du colis à l'entrepôt de Lyon.
+
+Les frais de retour sont à la charge de l'entreprise pour un produit
+défectueux, à la charge du client pour une simple rétractation.

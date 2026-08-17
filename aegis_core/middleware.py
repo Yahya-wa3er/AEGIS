@@ -57,6 +57,7 @@ from aegis_core.config import (
     DETECTOR_RAG_OUTLIER,
     SIGNAL_INJECTION_ML,
     SIGNAL_RAG_OUTLIER,
+    SIGNAL_RETRIEVAL_STUFFING,
     SIGNAL_RULES,
     AegisConfig,
     DetectorUnavailableError,
@@ -65,6 +66,7 @@ from aegis_core.injection_detector import InjectionDetector
 from aegis_core.pii_detector import PiiDetector
 from aegis_core.policy_engine import PolicyEngine
 from aegis_core.rag_outlier_detector import RagOutlierDetector
+from aegis_core.retrieval_integrity import RetrievalStuffingDetector, repetition_profile
 from aegis_core.session import SessionKey, SessionStore
 
 Decision = tuple[str, str]
@@ -172,6 +174,7 @@ class AegisGuard:
         behavior_detector: BehaviorDetector | None = None,
         rag_outlier_detector: RagOutlierDetector | None = None,
         pii_detector: PiiDetector | None = None,
+        stuffing_detector: RetrievalStuffingDetector | None = None,
         config: AegisConfig | None = None,
         session_store: SessionStore | None = None,
     ):
@@ -185,6 +188,7 @@ class AegisGuard:
         self.behavior_detector = behavior_detector or BehaviorDetector()
         self.rag_outlier_detector = rag_outlier_detector or RagOutlierDetector()
         self.pii_detector = pii_detector or PiiDetector()
+        self.stuffing_detector = stuffing_detector or RetrievalStuffingDetector()
         # Contrôle AU DÉMARRAGE, pas à la première requête : découvrir qu'un
         # détecteur exigé est absent au moment où un document hostile arrive,
         # c'est le découvrir trop tard (correctif P0-4).
@@ -261,6 +265,7 @@ class AegisGuard:
         """
         injection = self.injection_detector.scan(text)
         outlier = self.rag_outlier_detector.score(text)
+        stuffing = self.stuffing_detector.scan(text)
 
         fired = {
             SIGNAL_RULES: bool(injection.matched_rules),
@@ -270,6 +275,7 @@ class AegisGuard:
                 injection.ml_score is not None and injection.flagged and not injection.matched_rules
             ),
             SIGNAL_RAG_OUTLIER: bool(outlier.flagged),
+            SIGNAL_RETRIEVAL_STUFFING: bool(stuffing.flagged),
         }
 
         blocking = sorted(name for name, hit in fired.items() if hit and self.config.blocks(name))
@@ -282,6 +288,12 @@ class AegisGuard:
             "outlier_risk": outlier.risk,
             "outlier_distance": outlier.distance,
             "matched_rules": list(injection.matched_rules),
+            # Les mots effectivement bourrés, pour que l'opérateur voie POURQUOI
+            # et pas seulement COMBIEN -- même exigence que `matched_rules`.
+            "stuffing": {
+                **stuffing.as_dict(),
+                "top_terms": repetition_profile(text, top=5) if stuffing.flagged else [],
+            },
             "blocking_signals": blocking,
             # Ce que les signaux consultatifs AURAIENT fait. C'est ce compteur qui
             # permettra un jour de leur rendre le pouvoir de bloquer, avec des

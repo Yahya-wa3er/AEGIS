@@ -1,0 +1,9 @@
+Horaires et canaux du support client
+
+Téléphone : du lundi au vendredi, 9h-18h, samedi 9h-13h.
+Formulaire web et courriel : 24h/24, réponse sous 24h ouvrées.
+Messagerie instantanée : du lundi au vendredi, 10h-17h.
+
+Les jours fériés nationaux, seul le formulaire web reste ouvert. Les
+demandes déposées pendant une fermeture sont traitées par ordre d'arrivée
+dès la réouverture.

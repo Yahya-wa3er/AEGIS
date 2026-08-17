@@ -116,6 +116,12 @@ jobs:
         # bloque tout satisfait le premier critère et ne détecte rien.
         run: python -m redteam.run_redteam
 
+      - name: Banc de scénarios
+        # Complémentaire de la porte de non-régression : celui-ci vérifie que
+        # chaque scénario se comporte comme il l'annonce, SIGNAUX COMPRIS. Un
+        # blocage obtenu par le mauvais détecteur est un coup de chance.
+        run: python -m redteam.run_scenarios
+
       - name: Latence des points d'interception
         # Non bloquant : la latence d'un runner partagé varie trop pour servir de
         # porte. Le journal du job garde en revanche une trace datée, ce qui rend

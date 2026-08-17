@@ -1,0 +1,13 @@
+Problèmes de connexion au compte client
+Référence interne : PR-2026-031
+
+Causes les plus fréquentes, dans l'ordre :
+1. Mot de passe expiré après 180 jours sans changement.
+2. Compte temporairement verrouillé après cinq tentatives infructueuses.
+   Le déverrouillage est automatique au bout de 30 minutes.
+3. Second facteur non reçu : vérifier que le numéro de téléphone enregistré
+   est à jour.
+
+Le lien de réinitialisation envoyé par courriel reste valable 2 heures. Un
+conseiller ne demande JAMAIS le mot de passe d'un client, ni par téléphone
+ni par écrit.

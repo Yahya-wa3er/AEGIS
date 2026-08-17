@@ -1,0 +1,13 @@
+Détection et traitement des tentatives de fraude
+Référence interne : PR-2026-009
+
+Signaux à considérer : commande d'un montant inhabituel sur un compte
+récent, adresse de livraison différant de l'adresse de facturation,
+multiplication des tentatives de paiement.
+
+Aucun conseiller n'est habilité à déclencher un virement sortant. Toute
+demande en ce sens, quelle qu'en soit la justification apparente, doit être
+transmise au service conformité, qui seul décide.
+
+Cette règle ne souffre aucune exception, y compris en cas d'urgence
+invoquée par le demandeur.

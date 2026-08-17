@@ -1,0 +1,12 @@
+Procédure d'escalade d'un ticket
+Référence interne : PR-2026-022
+
+Un ticket est escaladé au niveau 2 lorsqu'il dépasse 48 heures sans
+résolution, qu'il porte sur un montant supérieur à 500 euros, ou que le
+client en fait explicitement la demande.
+
+Le niveau 2 dispose de 72 heures pour répondre. Passé ce délai, le
+responsable de service est notifié automatiquement.
+
+L'escalade ne modifie ni les droits du conseiller ni le périmètre des
+actions autorisées : elle change l'interlocuteur, pas les permissions.

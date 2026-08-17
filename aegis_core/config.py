@@ -79,8 +79,15 @@ ALL_DETECTORS: frozenset[str] = frozenset(
 SIGNAL_RULES = "rules"                # règles déterministes, explicables
 SIGNAL_INJECTION_ML = "injection_ml"  # classifieur DistilBERT
 SIGNAL_RAG_OUTLIER = "rag_outlier"    # distance au domaine documentaire
+# Redondance lexicale anormale : document fabriqué pour gagner le CLASSEMENT
+# plutôt que pour tromper la détection (lot 6, OWASP LLM09). Consultatif par
+# défaut : l'évasion hybride est mesurée et documentée, un signal contournable
+# par quiconque l'a lu n'a pas à décider seul.
+SIGNAL_RETRIEVAL_STUFFING = "retrieval_stuffing"
 
-ALL_SIGNALS: frozenset[str] = frozenset({SIGNAL_RULES, SIGNAL_INJECTION_ML, SIGNAL_RAG_OUTLIER})
+ALL_SIGNALS: frozenset[str] = frozenset(
+    {SIGNAL_RULES, SIGNAL_INJECTION_ML, SIGNAL_RAG_OUTLIER, SIGNAL_RETRIEVAL_STUFFING}
+)
 
 ENV_BLOCKING_SIGNALS = "AEGIS_BLOCKING_SIGNALS"
 ENV_REQUIRED_DETECTORS = "AEGIS_REQUIRED_DETECTORS"

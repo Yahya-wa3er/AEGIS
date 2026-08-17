@@ -245,6 +245,68 @@ Le system prompt de `VictimAgent` exige que chaque réponse cite le document uti
 
 `aegis_core/pii_detector.py` masque, dans chaque document RÉCUPÉRÉ ET NON NEUTRALISÉ, les données qui n'ont rien à faire dans un contexte envoyé à un LLM tiers : emails, IBAN, numéros de carte bancaire, numéros de téléphone français, clés d'API. C'est un troisième signal, indépendant des deux autres (`injection_detector.py`, `rag_outlier_detector.py`) : un document parfaitement légitime peut très bien contenir une donnée sensible laissée par erreur -- ce n'est pas une question de confiance envers le document, mais d'hygiène. Uniquement des règles regex, aucun entraînement nécessaire.
 
+## Manipulation du classement : la faille que la démo exposait sans le dire
+
+Le retrieval de démonstration classait les documents par **nombre brut de mots communs** avec la requête, sans normalisation par la longueur :
+
+```python
+scored = [(len(query_tokens & _tokenize(doc.content)), doc) for doc in documents]
+```
+
+Un document long a mécaniquement plus de vocabulaire, donc plus de recouvrement avec n'importe quelle requête. Sur les deux documents d'origine, `doc2_poisoned.txt` (113 mots distincts) l'emportait sur `doc1_clean.txt` (73) pour le seul mot « Bonjour ». Ce n'est pas un travers d'affichage — c'est la raison pour laquelle la démonstration jouait toujours la même scène.
+
+**Un attaquant qui ne contrôle que le contenu d'un document contrôle aussi sa sélection.** Mesuré : un document piégé rembourré de vingt-quatre mots de support client remontait en tête sur quatre requêtes sur cinq, y compris sur des sujets qu'il ne traitait pas. AEGIS le neutralise ensuite, donc l'injection ne passe pas — mais l'attaquant a gagné le droit d'**occuper tout le contexte**, et donc d'évincer les documents légitimes. C'est un déni de service sur la pertinence, et c'est le volet « classement » d'OWASP LLM09, distinct du contrôle d'accès à l'index.
+
+### Ce qui a été corrigé, et ce qui ne l'est pas
+
+`victim/rag.py` passe à **BM25** : saturation de la fréquence (`k1`) et normalisation par la longueur (`b`). Répéter un mot dix fois ne vaut plus dix occurrences, et un document deux fois plus long doit être deux fois plus pertinent pour obtenir le même score.
+
+Une mesure intermédiaire mérite d'être racontée, parce qu'elle a failli me faire livrer l'inverse d'un correctif. Sur le corpus d'origine — **deux documents** — BM25 faisait *gagner* l'attaquant 5 requêtes sur 7 là où l'ancien classement lui en faisait gagner 0. À trois documents, l'IDF est dégénérée : tout terme est rare, donc tout terme pèse. La conclusion s'inverse sur un corpus de taille réaliste (14 documents) : BM25 y est meilleur en pertinence (7/10 contre 5/10) et comparable en robustesse. **Mesurer sur un corpus trop petit produit une conclusion fausse avec la même assurance qu'une vraie mesure** — c'est la même erreur que la fuite du jeu de test, sous un autre habit.
+
+Le corpus de démonstration compte donc désormais **quatorze documents légitimes** de registres variés, et les attaques n'y vivent plus : elles sont plantées à la demande par les scénarios, comme un ticket hostile qui arrive.
+
+### Un sixième signal : l'intégrité du classement
+
+`aegis_core/retrieval_integrity.py` détecte les documents fabriqués pour *être récupérés*. Le principe est une régularité du langage : la prose française a une redondance caractéristique, mesurée par le rapport type/token (TTR = mots distincts / mots au total). Un texte écrit pour le classement en sort dans un sens ou dans l'autre.
+
+La bande est **interpolée par longueur** (loi de Heaps — un extrait de 60 mots a mécaniquement un TTR plus haut qu'un extrait de 800), calibrée sur 10 281 mots de prose française réelle du dépôt, 200 fenêtres par taille. Reproductible : `python -m scripts.measure_ttr_envelope`.
+
+| population | TTR | verdict |
+|---|---|---|
+| 14 documents légitimes du corpus | 0,679 – 0,847 | **0 faux positif** |
+| bourrage en profondeur (répétitions) | 0,143 | détecté |
+| bourrage en largeur (mots tous distincts) | 1,000 | détecté |
+| **bourrage hybride** | **0,535** | **non détecté** |
+
+La dernière ligne est le résultat, pas une note de bas de page. Un attaquant qui a lu ce module mélange les deux techniques : assez de répétitions pour gagner le classement, assez de termes nouveaux pour rester dans la bande. À 437 mots, la prose réelle va de 0,474 à 0,684 — le document est rigoureusement indistinguable. `tests/test_retrieval_integrity.py::test_hybrid_stuffing_evades_detection` **fige cette évasion** : le jour où quelqu'un annonce l'avoir corrigée, le test dira le contraire.
+
+Ce signal est donc **consultatif**, comme le classifieur ML et le détecteur d'outliers : un contrôle contournable par quiconque l'a lu n'a pas à décider seul. La charge utile du document hybride, elle, reste bloquée par les règles déterministes — l'évasion porte sur le classement, pas sur l'injection.
+
+La vraie défense n'est d'ailleurs pas statistique : c'est de faire en sorte que gagner le classement ne donne pas tout le contexte (plafonner la part d'un document unique dans le contexte récupéré). Ce n'est pas fait, et c'est écrit dans les limites connues.
+
+## Le banc de scénarios
+
+```bash
+python -m redteam.run_scenarios
+python -m redteam.run_scenarios --scenario bourrage-classement-hybride
+```
+
+Douze situations jouables, couvrant les cinq points d'interception, **sans aucun appel LLM** — la partie du produit qui décide ne dépend d'aucun service externe, et la démonstration doit pouvoir le montrer.
+
+```
+Injection de second ordre
+  [OK   ] injection-second-ordre    LLM01  on_tool_result   retour d'outil neutralisé
+
+Manipulation du classement
+  [OK   ] bourrage-classement-hybride  LLM09  on_retrieval  document neutralisé
+
+Attaques arrêtées : 10/10    Contrôles bloqués à tort : 0/2    Scénarios non conformes : 0/12
+```
+
+Chaque scénario porte sa famille, sa référence OWASP, ce qui devrait se passer et **où regarder** — un banc d'essai qui montre un résultat sans dire quoi observer ne démontre rien. Il vérifie aussi les **signaux**, pas seulement le verdict : un blocage obtenu par le mauvais détecteur est un coup de chance, pas une défense. C'est ce mécanisme qui permet au scénario d'évasion d'affirmer « ce signal ne doit PAS tirer » et de le prouver.
+
+Différence avec `run_redteam` : celui-ci mesure un taux et sert de porte de non-régression ; le banc de scénarios explique. Les deux tournent en CI.
+
 ## Comment les chiffres de ce README sont produits
 
 Tous les taux publiés ici viennent d'un jeu de **test**, mesuré une fois, avec un seuil figé avant la mesure. Ça n'a pas toujours été le cas, et la différence n'est pas cosmétique.
@@ -502,6 +564,16 @@ Le plafond de sessions protège la mémoire, pas la détection : sous une charge
 
 Enfin, l'isolation porte sur l'état comportemental et l'état de requête. L'index RAG, lui, reste commun à tous les locataires (voir LLM09).
 
+### Manipulation du classement (lot 6)
+
+Trois limites, toutes mesurées.
+
+**L'évasion hybride n'est pas couverte.** Détaillée plus haut : un bourrage qui mélange répétition et vocabulaire neuf reste dans la bande du français réel. Le test qui la fige est `test_hybrid_stuffing_evades_detection`.
+
+**BM25 reste un sac de mots.** Un attaquant qui anticipe la requête exacte et rembourre avec ses mots peut encore remonter. La mesure retenue n'est d'ailleurs pas « l'attaquant ne gagne jamais » mais « il ne gagne pas toutes les requêtes » — c'est ce que le test vérifie, parce que c'est ce qui est vrai.
+
+**Le contexte n'est pas plafonné.** La défense de fond contre la manipulation de classement n'est pas de détecter le bourrage, c'est de faire en sorte que gagner le premier rang ne donne pas la totalité du contexte : récupérer plusieurs documents et borner la part de chacun. `victim/agent.py` récupère toujours `top_k=1`. Tant que c'est le cas, un attaquant qui gagne le classement gagne tout le contexte, détecté ou non.
+
 ### Assainissement des documents / PII (section 4.5)
 
 Uniquement des règles regex (comme la V0 du détecteur d'injection) : rapide et explicable, mais ça manque forcément ce qu'un regex ne peut pas anticiper par construction -- une donnée déguisée (espaces insérés dans un numéro de carte, IBAN écrit avec des mots), un format non couvert (numéro de téléphone étranger hors format français), ou un identifiant sensible métier qui ne ressemble à aucun des motifs codés en dur (`PII_PATTERNS` dans `aegis_core/pii_detector.py`). Un classifieur ML entraîné sur des exemples annotés (type NER pour données personnelles) généraliserait mieux, au prix d'un entraînement -- même compromis que la V0 du détecteur d'injection avant sa Phase 2. Le motif "carte bancaire" (13 à 16 chiffres consécutifs) peut aussi produire un faux positif sur une longue suite de chiffres qui n'est pas une carte (ex. un identifiant de commande à 14 chiffres) -- assumé : mieux vaut masquer par excès dans ce cas précis qu'oublier une vraie donnée sensible.
@@ -522,7 +594,7 @@ Le tableau ci-dessous est une évaluation honnête de ce qui est réellement cou
 | LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | 🔴 quasi absente | Seul l'état par session est borné (expiration + plafond avec éviction), ce qui ferme un vecteur : des `session_id` jetables ne font plus croître la mémoire sans limite. Manque tout le reste : budget de jetons, plafond de coût, limitation de débit, borne sur les boucles d'agent. Les endpoints de démo déclenchent de vrais appels LLM sans authentification. |
 | LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ amorce | La vérification de citation est la bonne intuition. Manque la vérification d'ancrage : la réponse est-elle réellement *soutenue* par la source citée ? |
 | LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
-| LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire à la récupération. |
+| LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF, classement BM25 (longueur normalisée) et détection de bourrage de classement — **évasion hybride mesurée et non couverte**. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire, pas de plafond sur la part d'un document dans le contexte. |
 | LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | 🔴 absente | Les retours d'outils et la réponse finale traversent sans validation. Le frontend échappe correctement (React, pas de `dangerouslySetInnerHTML`), mais c'est le seul rempart et il est côté client. |
 
 Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py` étaient ceux de l'édition **2023** sous un en-tête « 2025 » (`LLM06 Sensitive Information Disclosure`, `LLM08 Excessive Agency`). Corrigé — voir la table de correspondance en tête de ce fichier.
@@ -537,6 +609,8 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Détection d'injection | ✅ V0 heuristique (regex) + Phase 2 ML (DistilBERT multilingue fine-tuné, ensemble regex+ML) -- voir "Limites connues" |
 | Journal d'audit signé | ✅ SQLite + chaînage SHA-256 + signatures Ed25519 par entrée, triggers SQLite append-only, pseudonymisation et coffre effaçable (RGPD art. 17) -- Postgres en V1 |
 | Discipline de mesure | ✅ Lot 5A — split train/calibration/test par gabarit, détection de fuite bloquante, seuils calibrés hors du test, intervalles de Wilson, latences publiées |
+| Intégrité du classement | ✅ Lot 6 — BM25, corpus de 14 documents, détection de bourrage (évasion hybride figée par un test) |
+| Banc de scénarios | ✅ Lot 6 — 12 scénarios sur 5 points d'interception, vérification des signaux et pas seulement du verdict |
 | Isolation de l'état par session | ✅ Lot 4B — clé `(tenant, agent, session_id)`, bornée en taille et dans le temps, dégradation déclarée |
 | Détection d'anomalies comportementales (VAE) | ✅ Phase 2 (Beta-VAE, détection partielle sur cas limites -- voir "Limites connues") |
 | Durcissement RAG (filtre PII/secrets, outliers embeddings) | ✅ Phase 3 : outliers d'embeddings (TF-IDF, voir limites) + citation obligatoire + assainissement PII/secrets par regex (voir limites) |
