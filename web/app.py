@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from aegis_core.grounding import GroundingVerifier
+from aegis_core.model_registry import load_registry
 from aegis_core.injection_detector import InjectionDetector
 from aegis_core.middleware import AegisGuard
 from aegis_core.pii_detector import PiiDetector
@@ -456,6 +457,29 @@ def status() -> dict:
         # LLM06 : ces deux gardes protègent la démonstration elle-même. Les
         # exposer ici, c'est appliquer au produit la règle qu'il impose aux
         # autres -- un plafond qu'on ne peut pas observer ne se vérifie pas.
+        # Cycle de vie des modèles (lot 9). Les chiffres publiés décrivent un
+        # modèle précis : sans son empreinte et sa version, ils ne sont
+        # rattachés à rien et personne ne peut constater qu'ils ont dérivé.
+        "modeles": [
+            {
+                "nom": carte.name,
+                "version": carte.version,
+                "role": carte.decision_role,
+                "artefact": carte.artifact_sha256[:12],
+                "jeu_de_donnees": carte.dataset_sha256[:12],
+                "seuil": carte.threshold,
+                "mesures": [
+                    {"nom": m.name, "valeur": m.proportion.format(), "sens": m.direction}
+                    for m in carte.metrics
+                ],
+                "modes_echec": list(carte.known_failures),
+            }
+            for carte in sorted(load_registry().models.values(), key=lambda c: c.name)
+        ],
+        # Dérive : ce que le détecteur voit RÉELLEMENT, comparé à ce sur quoi son
+        # seuil a été calibré. Le garde est neuf ici, donc le compteur est à zéro
+        # et le rapport dit « pas assez vu » -- ce qui est l'information juste.
+        "derive": rapport["score_drift"],
         "consommation": {
             "debit_par_client": app.state.rate_limiter.stats(),
             "enveloppe_globale": app.state.llm_budget.stats(),

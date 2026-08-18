@@ -33,13 +33,31 @@ def base():
 # -- base de connaissances --------------------------------------------------
 
 
-def test_la_base_couvre_les_trois_origines(base):
+def test_la_base_ne_contient_que_des_origines_connues(base):
+    """Le README et les scénarios sont toujours là. Les cartes de modèle et les
+    mesures dépendent de ce qui a été promu et entraîné localement : leur absence
+    est un état légitime, pas une panne."""
     origines = {e.origine for e in base}
-    assert origines == {"readme", "scenario", "mesure"} or origines == {"readme", "scenario"}
-    # Le README et les scénarios sont toujours là ; les mesures dépendent de la
-    # présence des modèles entraînés, et leur absence est un cas légitime.
+    assert origines <= {"readme", "scenario", "carte", "mesure"}
     assert any(e.origine == "readme" for e in base)
     assert any(e.origine == "scenario" for e in base)
+
+
+def test_les_cartes_de_modele_sont_indexees(base):
+    """Les cartes sont générées depuis le registre : les indexer apprend à
+    l'assistant les mesures, seuils et modes d'échec de chaque détecteur sans
+    introduire un seul chiffre saisi à la main."""
+    from web.assistant import CARTES_DIR
+
+    if not CARTES_DIR.is_dir() or not list(CARTES_DIR.glob("*.md")):
+        pytest.skip("aucune carte de modèle générée : lance `model_registry_cli promote`")
+    cartes = [e for e in base if e.origine == "carte"]
+    assert cartes
+    reponse = assistant.repond(
+        "Quels sont les modes d'échec connus du détecteur d'outliers RAG ?", base
+    )
+    assert reponse.a_repondu
+    assert any(t.extrait.origine == "carte" for t in reponse.extraits)
 
 
 def test_aucune_mesure_n_est_ecrite_en_dur_dans_l_assistant():

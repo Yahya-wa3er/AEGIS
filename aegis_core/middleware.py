@@ -51,6 +51,7 @@ from typing import Protocol
 from aegis_core.audit_log import AuditLog
 from aegis_core.behavior_detector import BehaviorDetector, BehaviorScanResult
 from aegis_core.behavior_features import ACTIONS, SESSION_LENGTH, ActionEvent
+from aegis_core.drift import ScoreObserver
 from aegis_core.config import (
     DETECTOR_BEHAVIOR,
     DETECTOR_INJECTION_ML,
@@ -203,6 +204,17 @@ class AegisGuard:
         # le magasin fourni par l'appelant tant qu'aucune session n'y était née.
         self.sessions = session_store if session_store is not None else SessionStore()
 
+        # Surveillance de dérive (lot 9). La référence est la distribution des
+        # distances mesurée à la CALIBRATION, écrite dans metrics.json par le
+        # script d'entraînement. Elle peut être absente (modèle non entraîné, ou
+        # entraîné avant le lot 9) : l'observateur collecte alors quand même,
+        # parce que savoir ce que le détecteur voit reste utile — on ne peut
+        # simplement pas dire si ça a changé.
+        self.drift = ScoreObserver(
+            signal=SIGNAL_RAG_OUTLIER,
+            reference=getattr(self.rag_outlier_detector, "calibration_quantiles", None),
+        )
+
     def detector_status(self) -> dict[str, dict[str, object]]:
         """État réel de chaque détecteur ML, pour le rapport et le tableau de bord.
 
@@ -266,6 +278,13 @@ class AegisGuard:
         injection = self.injection_detector.scan(text)
         outlier = self.rag_outlier_detector.score(text)
         stuffing = self.stuffing_detector.scan(text)
+
+        # On enregistre la DISTANCE et non le risque : le risque est une
+        # transformation du seuil (1 - exp(-d/seuil)), donc changer le seuil
+        # déplacerait la distribution observée sans qu'aucune donnée n'ait bougé.
+        # La distance, elle, ne dépend que du texte et du modèle.
+        if outlier.distance is not None:
+            self.drift.observe(outlier.distance)
 
         fired = {
             SIGNAL_RULES: bool(injection.matched_rules),
@@ -592,6 +611,11 @@ class AegisGuard:
             "detectors": self.detector_status(),
             "fail_mode": self.config.fail_mode,
             "audit_integrity": integrity.as_dict(),
+            # Dérive : ce que le détecteur voit RÉELLEMENT depuis le démarrage,
+            # comparé à ce sur quoi son seuil a été calibré. Refuse de conclure
+            # sous un effectif minimal -- « pas assez vu » n'est pas « rien à
+            # signaler ».
+            "score_drift": self.drift.report().as_dict(),
             # Isolation de l'état comportemental. `degraded: true` signifie qu'au
             # moins une fenêtre est partagée faute d'identifiant de session dans
             # le contexte -- le détecteur observe alors une suite d'actions qui

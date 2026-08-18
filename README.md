@@ -363,6 +363,79 @@ Wilson plutôt que l'intervalle normal parce que ce dernier donne `[0 ; 0]` pour
 
 Un intervalle quantifie l'incertitude d'**échantillonnage**. Il ne dit rien du biais de sélection : si les payloads ont été écrits en regardant les règles, l'intervalle sera étroit et le chiffre restera faux. C'est un problème de corpus, pas de statistique.
 
+## Cycle de vie des modèles : registre, cartes, porte de promotion
+
+### Le trou que ça bouche
+
+Jusqu'au lot 9, chaque détecteur écrivait ses mesures dans `models/<nom>/metrics.json` — à côté de ses poids, dans un répertoire que `.gitignore` exclut. Deux conséquences que personne n'avait tirées :
+
+1. **Les chiffres de ce README n'étaient rattachés à rien.** « 86 % [60-96 %] de rappel » décrit *un* modèle, entraîné *un* jour, sur *un* jeu de données. Rien dans le dépôt ne disait lequel.
+2. **Rien ne reliait un modèle sur disque à ses mesures.** Le `MANIFEST.json` de `model_io` vérifie qu'un artefact n'a pas été *altéré depuis son écriture* ; il ne dit pas que c'est l'artefact sur lequel les chiffres ont été obtenus. Réentraîner sans republier produit exactement ce cas : manifeste cohérent, chiffres périmés, et rien qui l'indique.
+
+`model_registry.json` est donc **versionné dans git**, contrairement aux poids. Il porte, par modèle promu : l'empreinte de l'artefact, l'empreinte du jeu d'entraînement, le seuil calibré et les mesures avec leurs intervalles.
+
+```bash
+python -m scripts.model_registry_cli check      # porte de promotion, sans rien écrire
+python -m scripts.model_registry_cli promote    # passe la porte PUIS enregistre
+python -m scripts.model_registry_cli cards      # régénère docs/model_cards/
+python -m scripts.model_registry_cli verify     # le disque correspond-il au registre ?
+```
+
+`check` et `promote` sont deux commandes distinctes, et ce n'est pas cosmétique : une porte qui enregistre en même temps qu'elle juge n'est pas une porte, elle constate après coup. La CI lance `check` ; `promote` est un geste délibéré.
+
+### La porte de promotion
+
+C'est l'idée centrale du lot, et c'est la discipline du lot 5A transposée du constat isolé au cycle de vie.
+
+Un projet de ML qui n'a pas de règle de promotion en a une quand même, implicite, et c'est toujours la même : *le nouveau chiffre est plus grand, donc on garde le nouveau modèle*. Sur les effectifs de ce dépôt, c'est un tirage à pile ou face présenté comme un progrès. Passer de 12/14 à 13/14 de rappel fait monter le point de **86 % à 93 %** — et les deux intervalles de Wilson se recouvrent largement. On n'a rien démontré.
+
+| cas | intervalles | décision |
+|---|---|---|
+| **Régression prouvée** | disjoints, dans le mauvais sens | promotion **refusée** |
+| **Amélioration prouvée** | disjoints, dans le bon sens | promotion acceptée, et l'affirmation « c'est mieux » est soutenue |
+| **Indécidable** | ils se recouvrent | promotion autorisée, mais **interdiction d'annoncer une amélioration** — et le rapport dit combien d'échantillons il faudrait pour trancher |
+
+Deux détails qui font la différence entre une porte et une décoration :
+
+* **Le sens de « mieux » est déclaré par métrique.** Une baisse des faux positifs et une baisse du rappel se ressemblent — les deux sont « une baisse ». Sans `direction`, la porte laisserait passer la seconde en croyant voir la première.
+* **Une métrique qui disparaît compte comme une régression.** Sinon, retirer la mesure gênante serait le moyen le plus simple de franchir la porte.
+
+#### Une subtilité statistique qu'il faut écrire
+
+Comparer deux intervalles de confiance par recouvrement est un test **conservateur**, pas un test exact. L'implication ne va que dans un sens :
+
+* intervalles **disjoints** ⟹ différence significative ;
+* intervalles qui **se recouvrent** ⟹ on ne peut rien conclure — et surtout **pas** « il n'y a pas de différence ». Deux intervalles à 95 % peuvent se recouvrir alors qu'un test exact de comparaison de proportions rejetterait l'égalité.
+
+Le choix est délibéré : le coût d'une promotion injustifiée — publier « 92 % » et le voir s'effondrer sur d'autres données — dépasse celui d'une promotion manquée. La conséquence assumée est qu'à ces volumes, presque tout est « indécidable ». Ce n'est pas un défaut de la règle, c'est ce que disent les données, et le rapport le dit au lieu de le masquer.
+
+### Les cartes de modèle
+
+`docs/model_cards/<nom>.md` — usage prévu, données, mesures avec intervalles, seuil calibré, **modes d'échec connus**, commande de reproduction. Entièrement **générées** depuis le registre : seules les parties éditoriales (à quoi ça sert, comment ça échoue) sont écrites, et une seule fois. La CI vérifie qu'elles correspondent à leur générateur, exactement comme pour `data/`.
+
+Elles sont aussi **indexées par l'assistant sécurité** : lui demander les modes d'échec d'un détecteur renvoie sa carte, avec ses vrais chiffres, sans qu'aucun n'ait été recopié.
+
+### Le modèle mesuré est-il celui qu'on obtient ?
+
+Les deux détecteurs légers se sont révélés **bit-reproductibles** : réentraînés sur les mêmes données versionnées, ils produisent des artefacts identiques au bit près. `verify` en CI vérifie donc quelque chose de fort — *les chiffres publiés décrivent le modèle que ce dépôt permet de reconstruire*.
+
+Si cette étape rougit un jour après une montée de version de `torch` ou de `scikit-learn`, ce ne sera pas un faux positif : les chiffres du registre ne décriront plus ce que produit le dépôt, et la réponse sera de relancer `promote`.
+
+### Dérive : seulement ce qui est réellement observable
+
+Un module de « détection de dérive » est facile à mettre en scène et difficile à faire dire quelque chose. Ce dépôt n'a **aucun trafic de production** — personne n'a jamais branché AEGIS sur un vrai flux d'agent. Publier une courbe de dérive dans ces conditions serait exactement le genre de chiffre décoratif que ce projet passe son temps à débusquer ailleurs.
+
+`aegis_core/drift.py` fait donc une chose, précisément : il compare la distribution des distances **réellement observées** depuis le démarrage du processus à celle mesurée sur le jeu de calibration (quantiles écrits dans `metrics.json` par le script d'entraînement), et il **refuse de conclure** sous 50 observations. « Pas assez vu » n'est pas « rien à signaler », et le rapport affiche la différence.
+
+Pourquoi c'est utile quand même : le seuil d'un détecteur n'a de sens que sur la distribution qui a servi à le poser. Déployé sur un autre domaine — un corpus juridique là où on a calibré sur des tickets de support — le même seuil produit un tout autre taux de faux positifs sans qu'aucune erreur ne soit visible. Le système continue de tourner, il se trompe simplement plus souvent. C'est le mode de défaillance silencieux le plus courant en apprentissage automatique.
+
+Ce que ce n'est pas : un test statistique (ni Kolmogorov-Smirnov, ni PSI), mais une comparaison de quantiles qui donne un ordre de grandeur. L'état vit en mémoire du processus, comme les compteurs LLM06. Et **aucun seuil d'alerte n'est proposé** — il faudrait des données de production pour savoir quel décalage est tolérable, et il n'y en a pas.
+
+### Ce que le registre ne fait pas
+
+* **Ce n'est pas un stockage d'artefacts.** Les poids ne sont toujours pas versionnés, donc le registre ne permet pas de *récupérer* un modèle passé, juste de constater que celui qu'on a n'est pas celui qu'on croit. Un vrai cycle de vie demanderait un dépôt binaire (MLflow, DVC, un bucket).
+* **Il n'est pas signé.** Comme le manifeste de `model_io`, il protège contre la dérive accidentelle et contre un attaquant qui modifie un fichier sans pouvoir réécrire le reste — pas contre quelqu'un qui a les droits d'écriture sur le dépôt.
+
 ## Latence
 
 Mesurée par `python -m scripts.benchmark_latency` (300 itérations, 5 de chauffe, conteneur Linux 2 vCPU ; ces chiffres se comparent entre eux, pas dans l'absolu). La dernière colonne rapporte le p95 à un aller-retour LLM de 500 ms.
@@ -816,6 +889,8 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Détection d'anomalies comportementales (VAE) | ✅ Phase 2 (Beta-VAE, détection partielle sur cas limites -- voir "Limites connues") |
 | Durcissement RAG (filtre PII/secrets, outliers embeddings) | ✅ Phase 3 : outliers d'embeddings (TF-IDF, voir limites) + citation obligatoire + assainissement PII/secrets par regex (voir limites) |
 | Red-teaming automatisé | ✅ V0 fonctionnelle, corpus enrichi (10 contrôles bénins diversifiés), taux publiés avec intervalle de confiance -- corpus encore trop petit pour conclure (voir limites) |
+| MLOps : registre, cartes, porte de promotion | ✅ Lot 9 — registre versionné avec empreintes, cartes générées, promotion refusée sur régression prouvée (intervalles disjoints), reproductibilité vérifiée en CI |
+| Détection de dérive | ⚠️ Lot 9 — comparaison de quantiles observés vs calibration, sans seuil d'alerte ; jamais confrontée à du trafic de production |
 | Dashboard SOC | ✅ V1 (dashboard Next.js interactif, comparaison protégé/non-protégé) -- alerting et historique en Phase 5 |
 | Limitation de consommation (LLM06) | ✅ Lot 7.2 — seau à jetons par client, enveloppe globale sur fenêtre glissante, jeton partagé ; compte des appels, pas des tokens |
 | Assistant sécurité ancré | ✅ Lot 8 — réponses composées d'extraits cités, reformulation LLM facultative rejetée si un chiffre n'est pas soutenu, mode « essaie de me pirater » sans appel LLM |

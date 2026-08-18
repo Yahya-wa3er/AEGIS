@@ -131,6 +131,66 @@ export function Overview({ onVue }: { onVue: (v: VueId) => void }) {
         </div>
       </section>
 
+      {status.modeles.length > 0 && (
+        <section>
+          <SectionTitle>Registre de modèles</SectionTitle>
+          <p className="mb-3 text-[13px] text-[var(--muted)]">
+            Les taux publiés décrivent un modèle précis. Sans sa version et son empreinte, ils
+            ne sont rattachés à rien — et personne ne peut constater qu&apos;ils ont cessé de
+            décrire ce qui tourne.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {status.modeles.map((m) => (
+              <div
+                key={m.nom}
+                className="rounded-xl border border-[var(--line)] bg-[var(--bg)] px-4 py-3.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[13px] font-medium text-[var(--text)]">
+                    {m.nom}
+                  </span>
+                  <Pill tone={m.role === "bloquant" ? "accent" : "muted"}>{m.role}</Pill>
+                </div>
+                <div className="mt-1 font-mono text-[11px] text-[var(--faint)]">
+                  {m.version} · artefact {m.artefact}… · données {m.jeu_de_donnees}…
+                </div>
+                <ul className="mt-2.5 space-y-1">
+                  {m.mesures.map((mesure) => (
+                    <li key={mesure.nom} className="text-[12px] text-[var(--muted)]">
+                      <span className="font-mono text-[11px] text-[var(--faint)]">
+                        {mesure.nom}
+                      </span>
+                      <br />
+                      <span className="font-mono text-[12px] text-[var(--text)]">
+                        {mesure.valeur}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <details className="mt-2.5">
+                  <summary className="cursor-pointer text-[11.5px] text-[var(--accent-strong)]">
+                    {m.modes_echec.length} mode(s) d&apos;échec connu(s)
+                  </summary>
+                  <ul className="mt-1.5 space-y-1.5 text-[11.5px] leading-relaxed text-[var(--muted)]">
+                    {m.modes_echec.map((echec) => (
+                      <li key={echec}>— {echec}</li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--canvas)] px-4 py-3">
+            <div className="text-[12px] font-medium text-[var(--text)]">
+              Dérive du signal {status.derive.signal} — {status.derive.observations} observation(s)
+            </div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--muted)]">
+              {status.derive.commentaire}
+            </p>
+          </div>
+        </section>
+      )}
+
       <Panel title="Par où commencer">
         <div className="grid gap-2 sm:grid-cols-2">
           <Raccourci

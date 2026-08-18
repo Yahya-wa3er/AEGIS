@@ -124,6 +124,23 @@ def calibrate(vectorizer: TfidfVectorizer, centroid: np.ndarray) -> float:
     return threshold
 
 
+def reference_distribution(vectorizer: TfidfVectorizer, centroid: np.ndarray) -> dict[str, float]:
+    """Quantiles des distances de calibration, pour la surveillance de dérive.
+
+    Un seuil n'a de sens que sur la distribution qui a servi à le poser.
+    Enregistrer cette distribution est ce qui permettra, plus tard, de constater
+    que le détecteur voit autre chose que ce sur quoi il a été calibré -- le mode
+    de défaillance silencieux le plus courant en apprentissage automatique : le
+    système continue de tourner, il se trompe simplement plus souvent.
+    """
+    rows = _load_rows(CALIB_PATH)
+    distances = [_sklearn_distance(vectorizer, centroid, row["text"]) for row in rows]
+    return {
+        f"q{int(q * 100)}": float(np.quantile(distances, q))
+        for q in (0.5, 0.9, 0.99)
+    }
+
+
 def measure(vectorizer: TfidfVectorizer, centroid: np.ndarray, threshold: float) -> dict[str, object]:
     """Mesure sur le jeu de TEST, une seule fois, seuil déjà figé.
 
@@ -248,6 +265,7 @@ def main() -> None:
     spec = _build_spec(vectorizer)
     check_parity(vectorizer, centroid, spec)
     metrics = measure(vectorizer, centroid, threshold)
+    metrics["calibration_distance_quantiles"] = reference_distribution(vectorizer, centroid)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

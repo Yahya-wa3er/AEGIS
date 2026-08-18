@@ -144,6 +144,44 @@ jobs:
         # existe, ce qui n'était pas le cas.
         run: python -m scripts.benchmark_latency --iterations 100 --json /tmp/latence.json
 
+      - name: Porte de promotion (registre de modèles)
+        # Refuse un modèle dont une métrique montre une RÉGRESSION PROUVÉE :
+        # intervalles de Wilson disjoints dans le mauvais sens. Un simple « le
+        # nouveau chiffre est plus grand » ne suffit pas -- passer de 12/14 à
+        # 13/14 fait monter le point de 86 % à 93 % et ne démontre rien, les
+        # intervalles se recouvrant largement.
+        #
+        # `check` ne touche jamais au registre : la promotion est un geste
+        # délibéré (`promote`), pas un effet de bord de la CI.
+        run: python -m scripts.model_registry_cli check
+
+      - name: Le modèle mesuré est-il celui qu'on obtient ?
+        # Les deux détecteurs légers sont bit-reproductibles : réentraînés sur
+        # les mêmes données versionnées, ils produisent les mêmes artefacts. Ce
+        # contrôle vérifie donc que les chiffres publiés décrivent bien le
+        # modèle que ce dépôt permet de reconstruire.
+        #
+        # Le manifeste de model_io ne répond PAS à cette question : il prouve
+        # qu'un artefact n'a pas été altéré depuis son écriture, pas que c'est
+        # l'artefact sur lequel les mesures ont été obtenues.
+        #
+        # Si cette étape rougit après une montée de version de torch ou de
+        # scikit-learn, ce n'est pas un faux positif : les chiffres du registre
+        # ne décrivent plus ce que produit le dépôt. La réponse est de relancer
+        # `promote` et de commiter le nouveau registre.
+        run: python -m scripts.model_registry_cli verify
+
+      - name: Les cartes de modèle correspondent-elles au registre ?
+        # Même dispositif que pour data/ : un document généré qui dérive de son
+        # générateur est une documentation qui dérive de la réalité, en silence.
+        run: |
+          python -m scripts.model_registry_cli cards
+          if [ -n "$(git status --porcelain -- docs/model_cards/)" ]; then
+            echo "::error::docs/model_cards/ ne correspond plus au registre — relance 'python -m scripts.model_registry_cli cards' et commite"
+            git diff -- docs/model_cards/
+            exit 1
+          fi
+
       - name: Aucune mesure codée en dur dans l'assistant
         # L'assistant compose ses réponses à partir du README, des scénarios et
         # des fichiers de métriques, relus à l'exécution. Un chiffre recopié à

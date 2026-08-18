@@ -45,6 +45,7 @@ se réduit à numpy.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -141,6 +142,27 @@ class _TfidfModel:
         return vector / norm if norm > 0.0 else vector
 
 
+def _load_calibration_quantiles(model_dir: Path) -> dict[str, float] | None:
+    """Lit les quantiles de calibration dans metrics.json, si présents.
+
+    Absents (modèle entraîné avant le lot 9, ou fichier retiré), on retourne
+    None plutôt qu'un dictionnaire vide : « pas de référence » et « référence
+    vide » ne veulent pas dire la même chose, et le rapport de dérive doit
+    pouvoir dire laquelle des deux il a.
+    """
+    chemin = model_dir / "metrics.json"
+    if not chemin.is_file():
+        return None
+    try:
+        brut = json.loads(chemin.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    quantiles = brut.get("calibration_distance_quantiles")
+    if not isinstance(quantiles, dict) or not quantiles:
+        return None
+    return {str(k): float(v) for k, v in quantiles.items()}
+
+
 def _load_artifacts(model_dir: str) -> tuple[_TfidfModel | None, "np.ndarray | None", dict | None]:
     """Charge les artefacts en refusant toute désérialisation de code.
 
@@ -214,10 +236,22 @@ class RagOutlierDetector:
 
     def __init__(self, model_dir: Path | str = DEFAULT_MODEL_DIR):
         self._model, self._centroid, self._config = _load_artifacts(str(model_dir))
+        self._calibration_quantiles = _load_calibration_quantiles(Path(model_dir))
 
     @property
     def ml_available(self) -> bool:
         return self._model is not None
+
+    @property
+    def calibration_quantiles(self) -> dict[str, float] | None:
+        """Distribution des distances observée à la CALIBRATION, ou None.
+
+        Sert de référence à la surveillance de dérive (`aegis_core.drift`). Un
+        seuil n'a de sens que sur la distribution qui a servi à le poser :
+        déployé ailleurs, il produit un autre taux de faux positifs sans qu'aucune
+        erreur ne soit visible.
+        """
+        return self._calibration_quantiles
 
     def score(self, text: str) -> RagOutlierScanResult:
         if self._model is None or self._centroid is None or self._config is None:

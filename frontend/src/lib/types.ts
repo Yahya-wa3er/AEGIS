@@ -218,6 +218,37 @@ export type StatusReport = {
   blocking_signals: string[];
   signals: { id: string; mesure: string }[];
   consommation: ConsommationReport;
+  modeles: ModeleEnregistre[];
+  derive: DeriveReport;
+};
+
+/** Entrée du registre de modèles (lot 9).
+ *
+ *  Sans version ni empreinte, un taux publié n'est rattaché à rien : personne ne
+ *  peut constater qu'il décrit un modèle qui n'existe plus. */
+export type ModeleEnregistre = {
+  nom: string;
+  version: string;
+  role: string;
+  artefact: string;
+  jeu_de_donnees: string;
+  seuil: number | null;
+  mesures: { nom: string; valeur: string; sens: string }[];
+  modes_echec: string[];
+};
+
+/** Comparaison des scores observés à la distribution de calibration.
+ *
+ *  `suffisant: false` veut dire « pas assez vu », pas « rien à signaler » — la
+ *  distinction est tout l'intérêt du dispositif. */
+export type DeriveReport = {
+  signal: string;
+  observations: number;
+  suffisant: boolean;
+  reference: Record<string, number>;
+  observe: Record<string, number>;
+  ecarts: Record<string, number>;
+  commentaire: string;
 };
 
 /** Gardes LLM06 appliqués à la démonstration elle-même.

@@ -1,0 +1,95 @@
+{
+  "registry_version": 1,
+  "models": {
+    "behavior_vae": {
+      "name": "behavior_vae",
+      "version": "20260818-ac11f67b",
+      "created_at": "2026-08-18T10:42:01+00:00",
+      "artifact_sha256": "ac11f67b579c9d837fcda477c0bda1ddd05f12dbaf09c79ca7d76556b93596be",
+      "dataset_sha256": "86e473c085a9c0b73b1aa3b4ed11aab83deace2df621916157f4d4aca04bf3e9",
+      "dataset_files": [
+        "behavior_sessions_train.jsonl",
+        "behavior_sessions_calibration.jsonl",
+        "behavior_sessions_test.jsonl"
+      ],
+      "threshold": 4.079637050628662,
+      "target_false_positive_rate": 0.02,
+      "metrics": [
+        {
+          "name": "recall_all_anomalies",
+          "successes": 115,
+          "total": 120,
+          "low": 0.9061591476629648,
+          "high": 0.9820732831198905,
+          "direction": "plus_haut_est_mieux"
+        }
+      ],
+      "intended_use": "Repérer une suite d'actions d'agent statistiquement anormale sur une fenêtre de session (rafale d'actions sensibles, clôture en masse, détournement). Signal **consultatif**.",
+      "known_failures": [
+        "Un comportement légitime mais rare — une opération de maintenance groupée, par exemple — ressemble à une anomalie : le détecteur apprend l'habituel, pas le licite.",
+        "La fenêtre est indexée par (tenant, agent, session). Sans identifiant de session fourni par l'orchestrateur, l'état se dégrade en fenêtre partagée, et le rapport de robustesse le signale.",
+        "Un attaquant qui étale ses actions sur plusieurs sessions courtes reste sous le seuil, par construction."
+      ],
+      "training_command": "python -m scripts.generate_behavior_sessions && python -m scripts.train_behavior_vae",
+      "decision_role": "consultatif",
+      "notes": "Seuil calibré à un taux de faux positifs visé sur le jeu de calibration, puis mesuré sur un jeu de test tenu à l'écart."
+    },
+    "rag_outlier": {
+      "name": "rag_outlier",
+      "version": "20260818-4356a8e3",
+      "created_at": "2026-08-18T10:42:01+00:00",
+      "artifact_sha256": "4356a8e3dd3174522d6d7f04d51fcd13277faea620ebb7b81e8031661705b53b",
+      "dataset_sha256": "bac7546f21ca6021007d31481237b181b6cefb20c1f8a8addc5eb3974e22baa4",
+      "dataset_files": [
+        "rag_corpus_train.jsonl",
+        "rag_corpus_calibration.jsonl",
+        "rag_corpus_test.jsonl"
+      ],
+      "threshold": 0.7813545381014075,
+      "target_false_positive_rate": 0.05,
+      "metrics": [
+        {
+          "name": "false_positive_rate_in_domain",
+          "successes": 0,
+          "total": 72,
+          "low": 3.469446951953614e-18,
+          "high": 0.05065117259645781,
+          "direction": "plus_bas_est_mieux"
+        },
+        {
+          "name": "false_positive_rate_legitimate",
+          "successes": 3,
+          "total": 78,
+          "low": 0.013165825413161046,
+          "high": 0.1070844604750183,
+          "direction": "plus_bas_est_mieux"
+        },
+        {
+          "name": "false_positive_rate_out_of_domain",
+          "successes": 3,
+          "total": 6,
+          "low": 0.18761630648265054,
+          "high": 0.8123836935173494,
+          "direction": "plus_bas_est_mieux"
+        },
+        {
+          "name": "recall_attacks",
+          "successes": 12,
+          "total": 14,
+          "low": 0.6005862050302965,
+          "high": 0.9599060787285351,
+          "direction": "plus_haut_est_mieux"
+        }
+      ],
+      "intended_use": "Signaler qu'un document récupéré s'éloigne du domaine documentaire sur lequel l'agent a été calibré. Signal **consultatif** : il est journalisé et compté, il ne neutralise rien par lui-même.",
+      "known_failures": [
+        "Tout texte légitime hors du registre du corpus (note juridique, bulletin météo, rapport financier) le fait réagir : c'est la cause directe du taux de faux positifs hors-domaine mesuré plus haut, et la raison pour laquelle ce détecteur n'a pas le droit de bloquer.",
+        "Représentation TF-IDF : deux textes qui disent la même chose avec un autre vocabulaire sont vus comme éloignés. Aucune notion de sens.",
+        "Le seuil est calibré sur un corpus de tickets de support en français. Déployé sur un autre domaine, il doit être recalibré — le réutiliser tel quel revient à publier un taux qui n'a pas été mesuré là où il sert."
+      ],
+      "training_command": "python -m scripts.generate_rag_corpus && python -m scripts.train_rag_outlier_detector",
+      "decision_role": "consultatif",
+      "notes": "Découpe train/calibration/test disjointe par gabarit : deux variantes d'un même modèle de document ne peuvent pas se retrouver de part et d'autre de la frontière. Le seuil est fixé sur la calibration, jamais sur le test."
+    }
+  }
+}

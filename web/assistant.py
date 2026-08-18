@@ -60,6 +60,11 @@ from victim.scenarios import SCENARIOS
 
 RACINE = Path(__file__).resolve().parent.parent
 README = RACINE / "README.md"
+# Cartes de modèle (lot 9). Elles sont GÉNÉRÉES depuis le registre, donc les
+# indexer n'introduit aucun chiffre saisi à la main : l'assistant apprend les
+# mesures, les seuils et les modes d'échec de chaque détecteur en même temps que
+# le registre les publie.
+CARTES_DIR = RACINE / "docs" / "model_cards"
 METRIQUES = {
     "rag_outlier": RACINE / "models" / "rag_outlier" / "metrics.json",
     "behavior_vae": RACINE / "models" / "behavior_vae" / "metrics.json",
@@ -128,7 +133,7 @@ class Extrait:
     titre: str
     texte: str
     source: str
-    origine: str  # "readme" | "scenario" | "mesure"
+    origine: str  # "readme" | "scenario" | "carte" | "mesure"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -277,6 +282,18 @@ def charge_base() -> list[Extrait]:
                 origine="scenario",
             )
         )
+
+    if CARTES_DIR.is_dir():
+        for chemin in sorted(CARTES_DIR.glob("*.md")):
+            extraits.append(
+                Extrait(
+                    id=f"carte-{chemin.stem}",
+                    titre=f"Carte de modèle : {chemin.stem}",
+                    texte=chemin.read_text(encoding="utf-8"),
+                    source=str(chemin.relative_to(RACINE)),
+                    origine="carte",
+                )
+            )
 
     extraits.extend(_mesures())
     return extraits
