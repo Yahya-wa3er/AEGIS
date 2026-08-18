@@ -40,6 +40,7 @@ export function Overview({ onVue }: { onVue: (v: VueId) => void }) {
   const mesure = (id: string) => status.signals.find((s) => s.id === id)?.mesure ?? "";
   const bloquant = (id: string) => status.blocking_signals.includes(id);
   const capteur = (id: string) => status.detectors[id];
+  const enveloppe = status.consommation.enveloppe_globale;
 
   return (
     <div className="space-y-6">
@@ -74,7 +75,7 @@ export function Overview({ onVue }: { onVue: (v: VueId) => void }) {
           Elles ne détectent rien. Elles décident de ce que vaut une preuve, et de qui répond
           d&apos;un comportement — et elles se dégradent en silence, d&apos;où leur place ici.
         </p>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           <SystemCard
             titre="Journal d'audit"
             tone={status.audit_integrity.ok ? (status.audit_integrity.is_signed ? "ok" : "warn") : "danger"}
@@ -110,6 +111,22 @@ export function Overview({ onVue }: { onVue: (v: VueId) => void }) {
                 : "Aucun détecteur n'est exigé. Un modèle absent donne un risque nul, et le silence ressemble à « rien à signaler ». C'est un choix défendable — il doit être choisi, via AegisConfig.required_detectors."
             }
             icone={<IconFail />}
+          />
+          <SystemCard
+            titre="Consommation (LLM06)"
+            tone={enveloppe.actif ? "ok" : "warn"}
+            badge={status.consommation.jeton_partage ? "jeton exigé" : "démo ouverte"}
+            valeur={
+              enveloppe.actif
+                ? `${enveloppe.consommes} / ${enveloppe.max_par_heure} appels · 1 h`
+                : "Enveloppe désactivée"
+            }
+            detail={
+              enveloppe.actif
+                ? `Deux gardes, deux menaces : ${status.consommation.debit_par_client.rate_per_minute}/min par client protège la disponibilité entre visiteurs, l'enveloppe glissante protège la facture. Une limite par client ne borne pas la dépense — cent clients respectant chacun leur quota consomment cent fois le quota. Seuls ${status.consommation.endpoints_limites.length} endpoints sont concernés : ceux qui appellent réellement un modèle.`
+                : "Aucune enveloppe globale : le débit par client borne chaque visiteur, jamais le total. Défendable si un plafond de dépense existe côté fournisseur — sinon l'URL publique est une facture ouverte (AEGIS_LLM_CALLS_PER_HOUR)."
+            }
+            icone={<IconGauge />}
           />
         </div>
       </section>
@@ -309,6 +326,12 @@ const IconFail = () => (
   <svg {...s}>
     <path d="M12 4.5 21 19.5H3z" />
     <path d="M12 10v4M12 16.6v.2" />
+  </svg>
+);
+const IconGauge = () => (
+  <svg {...s}>
+    <path d="M4 18a8 8 0 1 1 16 0" />
+    <path d="m12 18 4.2-5.4" />
   </svg>
 );
 const IconArrow = () => (

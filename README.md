@@ -450,7 +450,7 @@ Barre latérale, cinq écrans, et un seul qui dépend d'un service externe.
 |---|---|---|
 | **Vue d'ensemble** | les 4 signaux de contenu, leur rôle, leur état réel et leur taux d'erreur mesuré ; le journal, l'isolation des sessions, le mode de défaillance | non |
 | **Banc de scénarios** | 12 situations sur les 5 points d'interception, le signal qui a tiré et celui qui avait le droit de décider | non |
-| **Analyse de document** | l'arbitrage réel appliqué à un texte collé par le visiteur | non |
+| **Analyse de document** | l'arbitrage réel appliqué à un texte collé, glissé-déposé ou importé par le visiteur, signal par signal et chacun avec son échelle | non |
 | **Laboratoire de classement** | les deux classements côte à côte, document hostile injecté à la volée | non |
 | **Simulation complète** | l'agent réel, avec et sans protection | oui |
 
@@ -464,11 +464,63 @@ Quatre écrans sur cinq fonctionnent sans clé d'API : la partie du produit qui 
 
 **Pas de score sans son seuil.** Le TTR s'affiche avec la bande attendue pour cette longueur. Un rapport type/token nu ne veut rien dire ; le même accompagné de sa bande explique le verdict, y compris quand ce verdict est « je n'ai rien vu ».
 
+**Pas de score attribué au mauvais capteur.** L'écran « Analyse de document » affichait un « risque retenu » de **1,00 sur un document parfaitement légitime**, sur une ligne libellée « RÈGLES ». Le chiffre venait en réalité de `max(règles, classifieur ML)` : c'était la probabilité du classifieur — celui dont ce README publie 50 % de faux positifs — présentée sous le nom du composant mesuré à 0 %. Le seul détecteur crédible du lot portait le chapeau du moins fiable. Voir « Décision, observation, et pourquoi les deux ne sont pas le même nombre » ci-dessous.
+
 **Pas de chiffre en dur.** Les valeurs affichées viennent de l'exécution en cours. Une première version du banc affichait un TTR figé dans le texte pédagogique qui divergeait de la mesure vive de 0,014 — corrigé avant livraison.
 
 **Pas de démonstration truquée.** Le laboratoire de classement présente un **arbitrage**, pas un avant/après flatteur : sur un corpus réaliste, l'ancien classement résiste mieux au bourrage que celui en production, et la console le dit quand c'est le cas.
 
 **Pas de recherche décorative.** La barre de la charte n'a été reprise qu'à condition qu'elle cherche vraiment. Une barre de recherche qui ne cherche rien est le premier signe qu'une interface a été copiée plutôt que conçue.
+
+### Décision, observation, et pourquoi les deux ne sont pas le même nombre
+
+C'est la correction du défaut **P1-M4** de l'audit interne (*commensurabilité des scores*), resté ouvert depuis la section 4.4.
+
+Quatre signaux regardent un document, et chacun produit un nombre entre 0 et 1. Ces nombres **ne sont pas comparables** :
+
+| signal | échelle | ce que vaut 1,00 |
+|---|---|---|
+| Règles | `min(1 ; motifs / 3)` | trois motifs déclencheurs ou plus |
+| Classifieur ML | probabilité softmax, **non calibrée** | le modèle est confiant — ce qui, hors de son registre d'entraînement, arrive une fois sur deux à tort |
+| Outlier RAG | `1 − exp(−distance / seuil)` | jamais : la fonction vaut **0,63 au seuil exact** et tend vers 1 sans l'atteindre |
+| Bourrage | booléen | drapeau levé |
+
+En prendre le `max` produit un nombre qui n'a pas d'unité. Pire : il fait remonter le signal le plus bruyant, pas le plus fiable.
+
+La console distingue donc deux choses, et les nomme :
+
+* **`decision_risk`** — le maximum sur les seuls signaux qui ont **le droit de bloquer** (`AegisConfig.blocking_signals`). C'est le nombre qui explique le verdict, et le seul affiché en gros.
+* **`observed_max_risk`** — le maximum sur *tous* les signaux, y compris consultatifs. Conservé, montré en petit, présenté comme ce qu'il est : un indicateur de surveillance, pas une décision.
+
+Chaque ligne de l'écran porte désormais **le nom de son échelle**. Un 0,58 d'outlier et un 0,58 de règles ne veulent pas dire la même chose, et l'interface ne doit pas laisser croire l'inverse.
+
+Ce qui reste ouvert : les scores ne sont toujours pas **calibrés** entre eux (Platt / isotonique + diagramme de fiabilité). Les rendre lisibles séparément était le préalable ; les rendre additionnables est un autre chantier, et il n'est pas fait.
+
+### Ce que la démonstration se coûte à elle-même (LLM06)
+
+Deux endpoints déclenchent de vrais appels LLM : `/api/simulate/{mode}` et `/api/test-document`. Ni l'un ni l'autre n'avait de plafond. Publier l'URL de la démo, c'était publier une facture qu'une boucle `curl` peut faire monter — *Unbounded Consumption* appliqué à sa propre vitrine, pendant que le tableau OWASP classait la ligne « 🔴 absente ».
+
+Deux gardes, parce qu'ils répondent à **deux menaces différentes** :
+
+```bash
+AEGIS_RATE_PER_MINUTE=10      # seau à jetons par client (défaut)
+AEGIS_RATE_BURST=5            # rafale tolérée avant le rythme moyen
+AEGIS_LLM_CALLS_PER_HOUR=300  # enveloppe globale, fenêtre glissante ; 0 = désactivée
+AEGIS_DEMO_TOKEN=…            # non défini = démo publique, et c'est un choix assumé
+```
+
+Le seau par client protège la **disponibilité** entre visiteurs. Il ne borne pas la dépense : cent clients respectant chacun scrupuleusement leur quota consomment cent fois le quota — à 10 appels/minute et 100 adresses, le plafond réel est de 1 000 appels/minute, c'est-à-dire aucun plafond. L'enveloppe globale protège la **facture**. Aucune des deux ne remplace l'autre, et un test le fige (`test_le_seau_par_client_ne_borne_pas_la_facture`).
+
+Détails qui comptent :
+
+* **Fenêtre glissante**, pas compteur remis à zéro à l'heure ronde — ce dernier laisse passer deux fois l'enveloppe à cheval sur deux heures.
+* **Ordre des gardes** : jeton → débit par client → enveloppe globale. L'enveloppe n'est entamée que par un appel qui serait effectivement parti ; la consommer avant le contrôle de débit permettrait à une boucle refusée en 429 d'épuiser le budget de tous **sans dépenser un centime**.
+* **429 ≠ 503** : « ralentis » et « l'instance ne peut plus servir cet écran » ne sont pas le même message, et les confondre enverrait le client réessayer en boucle.
+* Les compteurs sont **affichés dans la vue d'ensemble**. Un plafond qu'on ne peut pas observer ne se vérifie pas — c'est la règle que ce dépôt applique partout ailleurs.
+
+Ce que ça ne fait pas, et il faut le dire : l'état vit en mémoire du processus (un redémarrage remet tout à zéro ; derrière *n* répliques le plafond réel est multiplié par *n*), l'identification par IP est faible (CGNAT d'un côté, pool d'adresses de l'autre), et on compte des **appels**, pas des **tokens** — un document maximal coûte plus qu'une requête courte, et le budget ne le voit pas. Le vrai garde-fou budgétaire reste le plafond de dépense sur la clé API, côté fournisseur ; ceci n'en est que le complément applicatif.
+
+Une conséquence de conception, apprise en corrigeant : le limiteur vit sur `app.state`, pas dans une variable de module. La première version était un singleton de module, et le seul moyen de le reconfigurer dans un test était `importlib.reload(web.app)` — qui réécrit le dictionnaire du module partagé par toute la session pytest. Un test de limitation vidait le seau, et un test d'un autre fichier recevait `429` là où il attendait `404`. Le défaut n'était pas dans le test : un composant de garde qui n'est pas remplaçable sans effet de bord global n'est pas non plus déployable sans surprise.
 
 ### Couleurs et contrastes
 
@@ -656,7 +708,7 @@ Le tableau ci-dessous est une évaluation honnête de ce qui est réellement cou
 | LLM03 | **Excessive Agency** *(6ᵉ → 3ᵉ)* | ⚠️ partielle | Allow-list deny-by-default : la bonne base, et l'atout principal du projet. Manque : `sensitive_tools` sans effet, plafond de montant contournable par typage, pas de liste blanche de destinataires, pas de validation humaine, pas de quota. |
 | LLM04 | Supply Chain *(3ᵉ → 4ᵉ)* | ⚠️ partielle | Plus de chargement pickle, dépendances figées, artefacts vérifiés par SHA-256. Manque : SBOM, signature du bundle de modèles, provenance. |
 | LLM05 | Data and Model Poisoning | ⚠️ partielle | Détection d'outliers à la récupération. Rien à l'indexation, aucune provenance ni signature de document. |
-| LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | 🔴 quasi absente | Seul l'état par session est borné (expiration + plafond avec éviction), ce qui ferme un vecteur : des `session_id` jetables ne font plus croître la mémoire sans limite. Manque tout le reste : budget de jetons, plafond de coût, limitation de débit, borne sur les boucles d'agent. Les endpoints de démo déclenchent de vrais appels LLM sans authentification. |
+| LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | ⚠️ partielle | Trois états bornés : la mémoire par session (expiration + éviction), le **débit par client** (seau à jetons) et l'**enveloppe globale d'appels LLM** sur fenêtre glissante, avec jeton partagé facultatif — `web/ratelimit.py`. Manque : budget de **jetons** et plafond de **coût** (on compte des appels, pas des tokens), borne sur les boucles d'agent, et les compteurs vivent en mémoire de processus — derrière plusieurs répliques, le plafond réel est multiplié par leur nombre. |
 | LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ amorce | La vérification de citation est la bonne intuition. Manque la vérification d'ancrage : la réponse est-elle réellement *soutenue* par la source citée ? |
 | LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
 | LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF, classement BM25 (longueur normalisée) et détection de bourrage de classement — **évasion hybride mesurée et non couverte**. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire, pas de plafond sur la part d'un document dans le contexte. |

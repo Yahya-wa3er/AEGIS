@@ -14,7 +14,7 @@ import random
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,6 +28,7 @@ from redteam.run_scenarios import ecarts, joue
 from victim import rag, tools
 from victim.scenarios import SCENARIOS, SCENARIOS_PAR_ID, familles
 from victim.agent import VictimAgent
+from web import ratelimit
 
 logger = logging.getLogger("web.app")
 
@@ -80,6 +81,87 @@ _PAYLOAD_BY_ID = {p.id: p for p in PAYLOADS}
 _POISONED_PAYLOADS = [p for p in PAYLOADS if p.is_attack]
 _CLEAN_PAYLOADS = [p for p in PAYLOADS if not p.is_attack]
 _ATTACK_CATEGORIES = sorted({p.category for p in _POISONED_PAYLOADS})
+# Garde-fou des endpoints qui appellent réellement un LLM (OWASP LLM06).
+#
+# Sans lui, publier l'URL de la démonstration revient à publier une facture
+# OpenRouter que n'importe qui peut faire monter avec une boucle `curl`. Les
+# limites sont volontairement basses : cette démo sert à montrer un
+# comportement, pas à absorber du trafic.
+#
+# Le limiteur vit sur `app.state` et non dans une variable de module. La
+# première version était un singleton de module, et le seul moyen de le
+# reconfigurer dans un test était `importlib.reload(web.app)` -- qui réécrit le
+# dictionnaire du module PARTAGÉ par toute la session pytest. Résultat concret :
+# un test de limitation vidait le seau, et un test d'un autre fichier recevait
+# 429 là où il attendait 404. Le défaut n'était pas dans le test, il était dans
+# le fait qu'un composant de garde n'était pas remplaçable sans effet de bord
+# global -- exactement ce qu'on reproche ailleurs aux constantes câblées en dur.
+app.state.rate_limiter = ratelimit.from_env()
+# Deuxième garde, contre une menace que le premier ne couvre pas : le seau borne
+# ce que CHAQUE client consomme, jamais ce que la facture totalise. À 10
+# appels/minute et 100 adresses, le plafond réel est de 1 000 appels/minute.
+app.state.llm_budget = ratelimit.budget_from_env()
+
+
+def _garde_appels_llm(request: Request) -> None:
+    """Jeton partagé, puis débit par client, puis enveloppe globale.
+
+    L'ordre n'est pas cosmétique :
+
+    1. Le jeton d'abord — sinon un client non autorisé consomme le seau d'une IP
+       partagée, et un seul intrus suffit à faire refuser les appels légitimes
+       venant du même NAT.
+    2. Le débit par client ensuite — c'est le refus le moins coûteux à établir.
+    3. L'enveloppe globale en dernier — elle ne doit être *entamée* que par un
+       appel qui serait effectivement parti. La consommer avant le contrôle de
+       débit reviendrait à laisser un client abusif épuiser le budget de tous
+       sans qu'aucun appel LLM n'ait eu lieu.
+    """
+    attendu = ratelimit.expected_token()
+    if attendu is not None:
+        fourni = request.headers.get(ratelimit.HEADER_TOKEN, "")
+        # Comparaison à temps constant : sur un secret partagé, une comparaison
+        # naïve fuit sa longueur et son préfixe.
+        import hmac
+
+        if not hmac.compare_digest(fourni, attendu):
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Jeton manquant ou invalide. Cette instance exige l'en-tête "
+                    f"{ratelimit.HEADER_TOKEN} (variable {ratelimit.ENV_TOKEN})."
+                ),
+            )
+
+    client = request.client.host if request.client else "inconnu"
+    autorise, attente = request.app.state.rate_limiter.check(client)
+    if not autorise:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Trop d'appels. Réessaie dans {attente:.0f} s. "
+                "Ces endpoints déclenchent de vrais appels LLM ; les écrans "
+                "« banc de scénarios », « analyse de document » et "
+                "« laboratoire de classement » n'en font aucun et ne sont pas limités."
+            ),
+            headers={"Retry-After": str(max(1, int(attente)))},
+        )
+
+    dans_le_budget, liberation = request.app.state.llm_budget.check()
+    if not dans_le_budget:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Enveloppe d'appels LLM épuisée pour cette instance de "
+                f"démonstration (fenêtre glissante d'une heure). Libération dans "
+                f"{liberation / 60:.0f} min. Tout le reste de la console reste "
+                "utilisable : banc de scénarios, analyse de document, laboratoire "
+                "de classement — aucun de ces écrans n'appelle de modèle."
+            ),
+            headers={"Retry-After": str(max(1, int(liberation)))},
+        )
+
+
 TEST_DOCUMENT_QUERY = "Bonjour, pouvez-vous m'aider avec ma demande ?"
 
 
@@ -92,7 +174,21 @@ class AnalyzeDocumentResult(BaseModel):
     filename: str | None
     content_preview: str
     truncated: bool
-    injection_risk: float
+    # -- décomposition par signal (correctif P1-M4) ------------------------
+    #
+    # `injection_risk` valait `max(risque des règles, score ML)`. Sur une machine
+    # où le classifieur est entraîné, un document parfaitement légitime obtenait
+    # donc « risque 1,00 » — attribué visuellement aux RÈGLES, c'est-à-dire au
+    # seul composant mesuré à 0 % de faux positifs. Le champ combiné est
+    # supprimé : il rendait indiscernables le signal fiable et le signal bruyant.
+    #
+    # Les trois échelles ci-dessous ne sont PAS comparables entre elles : le
+    # risque de règles vaut `min(1, motifs/3)`, le score ML est une probabilité
+    # softmax mal calibrée, le risque d'outlier vaut 0,632 au seuil exact par
+    # construction. Les publier séparément est le minimum ; les calibrer pour
+    # qu'elles deviennent commensurables reste à faire (§4.4 de l'audit).
+    rule_risk: float
+    injection_ml_score: float | None
     injection_flagged: bool
     # Identifiants de règles + libellés lisibles. Les motifs bruts ne sortent
     # jamais de aegis_core.injection_detector (correctif P1-9e).
@@ -101,7 +197,13 @@ class AnalyzeDocumentResult(BaseModel):
     outlier_risk: float
     outlier_flagged: bool
     outlier_distance: float | None
-    overall_risk: float
+    stuffing: dict
+    # Maximum sur les seuls signaux HABILITÉS à décider. C'est le nombre qui
+    # explique le verdict, et le seul qu'on met en avant.
+    decision_risk: float
+    # Maximum sur les trois échelles, conservé pour le journal. Ne pas l'afficher
+    # comme « le risque » du document : il vaut celui du signal le plus bruyant.
+    observed_max_risk: float
     neutralized: bool
     # Signaux qui ont tiré sans avoir le droit de décider. Les afficher permet
     # au visiteur de voir ce que le système "pense" sans confondre ça avec ce
@@ -204,8 +306,12 @@ class TestDocumentResult(SimulationResult):
 
 
 @app.post("/api/simulate/{mode}", response_model=SimulationResult)
-def simulate(mode: str) -> SimulationResult:
-    """Rejoue le scénario de la démo (ticket #48291 piégé), avec ou sans AEGIS."""
+def simulate(mode: str, request: Request) -> SimulationResult:
+    """Rejoue le scénario de la démo (ticket #48291 piégé), avec ou sans AEGIS.
+
+    Protégé par `_garde_appels_llm` : cet endpoint fait de vrais appels LLM.
+    """
+    _garde_appels_llm(request)
     tools.reset()
 
     if mode == "protected":
@@ -344,6 +450,15 @@ def status() -> dict:
                 "mesure": "2 familles de bourrage sur 3 ; l'hybride évade la détection",
             },
         ],
+        # LLM06 : ces deux gardes protègent la démonstration elle-même. Les
+        # exposer ici, c'est appliquer au produit la règle qu'il impose aux
+        # autres -- un plafond qu'on ne peut pas observer ne se vérifie pas.
+        "consommation": {
+            "debit_par_client": app.state.rate_limiter.stats(),
+            "enveloppe_globale": app.state.llm_budget.stats(),
+            "endpoints_limites": ["/api/simulate/{mode}", "/api/test-document"],
+            "jeton_partage": ratelimit.expected_token() is not None,
+        },
     }
 
 
@@ -457,7 +572,7 @@ def list_attack_categories() -> dict[str, list[str]]:
 
 
 @app.post("/api/test-document", response_model=TestDocumentResult)
-def test_document(req: TestDocumentRequest) -> TestDocumentResult:
+def test_document(req: TestDocumentRequest, request: Request) -> TestDocumentResult:
     """Laboratoire de robustesse : génère (ou rejoue) un document du corpus de
     red-teaming et le fait REELLEMENT traverser l'agent -- vrai appel LLM,
     contrairement à `/api/analyze-document` qui ne fait qu'un scan de contenu
@@ -468,7 +583,10 @@ def test_document(req: TestDocumentRequest) -> TestDocumentResult:
     que deux tirages aléatoires différents), le frontend appelle d'abord sans
     `document_id` (un document est choisi/tiré au hasard et son id renvoyé),
     puis rappelle avec ce `document_id` pour l'autre mode.
+
+    Protégé par `_garde_appels_llm` : cet endpoint fait de vrais appels LLM.
     """
+    _garde_appels_llm(request)
     if req.document_id:
         payload = _PAYLOAD_BY_ID.get(req.document_id)
         if payload is None:
@@ -563,14 +681,17 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
         filename=req.filename,
         content_preview=content[:280],
         truncated=truncated,
-        injection_risk=injection_scan.risk,
+        rule_risk=injection_scan.rule_risk,
+        injection_ml_score=injection_scan.ml_score,
         injection_flagged=injection_scan.flagged,
         matched_rules=list(injection_scan.matched_rules),
         matched_descriptions=list(injection_scan.matched_descriptions),
         outlier_risk=outlier_scan.risk,
         outlier_flagged=outlier_scan.flagged,
         outlier_distance=outlier_scan.distance,
-        overall_risk=risk,
+        stuffing=dict(verdict["stuffing"]),
+        decision_risk=float(verdict["decision_risk"]),
+        observed_max_risk=risk,
         neutralized=flagged,
         advisory_signals=list(verdict["advisory_signals"]),
         blocking_signals=list(verdict["blocking_signals"]),

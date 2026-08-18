@@ -101,11 +101,25 @@ export type TestDocumentResult = SimulationResult & {
   document_content: string;
 };
 
+export type StuffingDetail = {
+  flagged: boolean;
+  reason: string | null;
+  ttr: number;
+  tokens: number;
+  expected_range: [number, number];
+  top_terms: [string, number][];
+};
+
 export type DocumentAnalysis = {
   filename: string | null;
   content_preview: string;
   truncated: boolean;
-  injection_risk: number;
+  /** Décomposition par signal (P1-M4). Le champ combiné `injection_risk` a été
+   *  supprimé : il valait `max(règles, ML)`, ce qui attribuait à la couche
+   *  déterministe — mesurée à 0 % de faux positifs — le score du classifieur,
+   *  mesuré à 50 %. Les trois échelles ci-dessous ne sont pas comparables. */
+  rule_risk: number;
+  injection_ml_score: number | null;
   injection_flagged: boolean;
   /** Identifiants de règles + libellés lisibles. L'API n'expose pas les
    *  expressions régulières : les publier reviendrait à donner la liste de ce
@@ -115,7 +129,13 @@ export type DocumentAnalysis = {
   outlier_risk: number;
   outlier_flagged: boolean;
   outlier_distance: number | null;
-  overall_risk: number;
+  stuffing: StuffingDetail | null;
+  /** Maximum sur les seuls signaux habilités à décider : le nombre qui explique
+   *  le verdict. */
+  decision_risk: number;
+  /** Maximum sur les trois échelles. Conservé pour le journal, jamais présenté
+   *  comme « le risque » du document. */
+  observed_max_risk: number;
   neutralized: boolean;
   advisory_signals: string[];
   blocking_signals: string[];
@@ -137,15 +157,6 @@ export type ScenarioSummary = {
   regarder: string;
   est_attaque: boolean;
   tags: string[];
-};
-
-export type StuffingDetail = {
-  flagged: boolean;
-  reason: string | null;
-  ttr: number;
-  tokens: number;
-  expected_range: [number, number];
-  top_terms: [string, number][];
 };
 
 export type VerdictDetails = {
@@ -206,4 +217,25 @@ export type StatusReport = {
   session_isolation: SessionIsolation;
   blocking_signals: string[];
   signals: { id: string; mesure: string }[];
+  consommation: ConsommationReport;
+};
+
+/** Gardes LLM06 appliqués à la démonstration elle-même.
+ *
+ *  Les deux compteurs répondent à deux menaces distinctes : le débit par client
+ *  protège la disponibilité entre visiteurs, l'enveloppe globale protège la
+ *  facture. Une limite par client ne borne pas la dépense — cent clients
+ *  respectant chacun leur quota consomment cent fois le quota. */
+export type ConsommationReport = {
+  debit_par_client: {
+    clients_suivis: number;
+    rate_per_minute: number;
+    burst: number;
+    portee: string;
+  };
+  enveloppe_globale:
+    | { actif: false; max_par_heure: 0 }
+    | { actif: true; consommes: number; max_par_heure: number; portee: string };
+  endpoints_limites: string[];
+  jeton_partage: boolean;
 };

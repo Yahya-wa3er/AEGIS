@@ -281,7 +281,30 @@ class AegisGuard:
         blocking = sorted(name for name, hit in fired.items() if hit and self.config.blocks(name))
         advisory = sorted(name for name, hit in fired.items() if hit and not self.config.blocks(name))
 
+        # Risque de la DÉCISION : le maximum sur les seuls signaux habilités à
+        # bloquer. C'est le seul nombre qui explique le verdict.
+        #
+        # `risk` juste en dessous est un maximum sur les TROIS échelles, qui ne
+        # sont pas commensurables (constat P1-M4 de l'audit) : le risque de
+        # règles vaut `min(1, motifs/3)`, le score ML est une probabilité softmax
+        # mal calibrée, le risque d'outlier vaut 0,632 au seuil exact par
+        # construction. Le publier comme « le risque » du document laisse croire
+        # à une grandeur unique — et lui attribue la valeur du signal le plus
+        # bruyant, pas de celui qui a décidé. Il est conservé pour le journal et
+        # la compatibilité, mais il n'est plus ce qu'on met en avant.
+        risque_par_signal = {
+            SIGNAL_RULES: injection.rule_risk,
+            SIGNAL_INJECTION_ML: injection.ml_score or 0.0,
+            SIGNAL_RAG_OUTLIER: outlier.risk,
+            SIGNAL_RETRIEVAL_STUFFING: 1.0 if stuffing.flagged else 0.0,
+        }
+        decision_risk = max(
+            (v for name, v in risque_par_signal.items() if self.config.blocks(name)),
+            default=0.0,
+        )
+
         details = {
+            "decision_risk": decision_risk,
             "risk": max(injection.rule_risk, injection.ml_score or 0.0, outlier.risk),
             "rule_risk": injection.rule_risk,
             "injection_ml_score": injection.ml_score,
