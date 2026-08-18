@@ -206,8 +206,30 @@ def client(monkeypatch):
     `monkeypatch.setattr` sur `app.state` restaure l'objet d'origine en sortie
     de test -- l'isolation est garantie par la construction, pas par la
     discipline.
+
+    Deux points que la première version avait ratés, et qui n'apparaissaient que
+    sur une machine correctement configurée :
+
+    **1. L'horloge est figée.** Le seau se recharge en temps réel. Sans clé
+    d'API, chaque requête échouait en quelques millisecondes et le seau restait
+    vide : le test passait. AVEC une clé, chaque requête déclenche un vrai
+    aller-retour LLM d'une seconde ou plus, le seau se recharge entre deux
+    appels, et les cinq passent. Le test ne mesurait donc pas la limitation mais
+    la lenteur du réseau -- il passait chez qui ne pouvait pas s'en servir et
+    échouait chez qui le pouvait. Une horloge figée rend l'arithmétique du seau
+    déterministe, ce qui est le sujet ; le rechargement dans le temps est déjà
+    couvert par les tests unitaires à horloge pilotée, plus haut.
+
+    **2. Aucun appel LLM réel.** Corollaire du point précédent : sur la machine
+    de Yahya, ces tests appelaient *effectivement* OpenRouter, une dizaine de
+    fois par exécution de la suite. Une suite de tests qui dépense de l'argent
+    est une suite qu'on finit par ne plus lancer -- et c'est particulièrement
+    savoureux dans le fichier censé prouver qu'on a bouché *Unbounded
+    Consumption*. `handle_request` est donc neutralisé : passer la garde donne
+    un 500, être refusé donne 429 ou 503. La distinction est nette et gratuite.
     """
     from fastapi.testclient import TestClient
+    from victim.agent import VictimAgent
 
     import web.app as module
 
@@ -215,20 +237,30 @@ def client(monkeypatch):
     monkeypatch.setattr(
         module.app.state,
         "rate_limiter",
-        ratelimit.RateLimiter(rate_per_minute=60, burst=2),
+        ratelimit.RateLimiter(rate_per_minute=60, burst=2, clock=lambda: 1000.0),
     )
     monkeypatch.setattr(
         module.app.state, "llm_budget", ratelimit.BudgetGlobal(max_calls=1000)
     )
+
+    def _pas_d_appel_reel(*_a, **_kw):
+        raise RuntimeError("appel LLM interdit dans les tests de limitation")
+
+    monkeypatch.setattr(VictimAgent, "handle_request", _pas_d_appel_reel)
     return TestClient(module.app, raise_server_exceptions=False)
 
 
 def test_les_endpoints_llm_sont_limites(client):
+    """Rafale de 2, puis refus -- et exactement ça, pas « au moins un 429 ».
+
+    L'assertion d'origine était `429 in codes`. Trop lâche : elle acceptait
+    aussi bien 4 refus sur 5 qu'un seul, donc elle n'aurait pas vu un seau mal
+    dimensionné. Avec une horloge figée, le compte est déterministe et peut
+    être écrit en toutes lettres.
+    """
     codes = [client.post("/api/simulate/unprotected").status_code for _ in range(5)]
-    assert 429 in codes, codes
-    # Les deux premiers passent la garde (et échouent ensuite faute de clé API,
-    # ce qui n'est pas notre sujet ici) ; les suivants sont refusés en amont.
-    assert codes.count(429) >= 2
+    # 500 = la garde a laissé passer et l'agent neutralisé a levé.
+    assert codes == [500, 500, 429, 429, 429], codes
 
 
 def test_les_endpoints_sans_llm_ne_sont_pas_limites(client):
@@ -242,39 +274,50 @@ def test_les_endpoints_sans_llm_ne_sont_pas_limites(client):
 
 
 def test_le_message_429_oriente_vers_ce_qui_reste_disponible(client):
-    for _ in range(5):
-        reponse = client.post("/api/simulate/unprotected")
-        if reponse.status_code == 429:
-            break
+    client.post("/api/simulate/unprotected")
+    client.post("/api/simulate/unprotected")
+    reponse = client.post("/api/simulate/unprotected")
     assert reponse.status_code == 429
     assert "Retry-After" in reponse.headers
     assert "aucun" in reponse.json()["detail"]
 
 
-def test_le_jeton_partage_est_verifie(monkeypatch):
-    from fastapi.testclient import TestClient
-
-    import web.app as module
-
+def test_le_jeton_partage_est_verifie(client, monkeypatch):
     # Le jeton est relu à CHAQUE requête (`ratelimit.expected_token()`), pas
     # figé au démarrage : `monkeypatch.setenv` suffit donc, sans reload.
     monkeypatch.setenv(ratelimit.ENV_TOKEN, "secret-de-demo")
-    monkeypatch.setattr(
-        module.app.state,
-        "rate_limiter",
-        ratelimit.RateLimiter(rate_per_minute=60, burst=5),
-    )
-    client = TestClient(module.app, raise_server_exceptions=False)
 
     assert client.post("/api/simulate/unprotected").status_code == 401
     assert client.post(
         "/api/simulate/unprotected", headers={ratelimit.HEADER_TOKEN: "faux"}
     ).status_code == 401
-    # Avec le bon jeton, la garde laisse passer : la suite échoue faute de clé
-    # LLM, ce qui prouve qu'on est allé plus loin que l'authentification.
+    # Avec le bon jeton, la garde laisse passer -- et l'agent neutralisé lève,
+    # d'où le 500. C'est ce 500 qui prouve qu'on est allé PLUS LOIN que
+    # l'authentification : un 401 de plus ne l'aurait pas montré.
     assert client.post(
         "/api/simulate/unprotected", headers={ratelimit.HEADER_TOKEN: "secret-de-demo"}
-    ).status_code != 401
+    ).status_code == 500
+
+
+def test_un_refus_d_authentification_ne_coute_rien_a_personne(client, monkeypatch):
+    """Le jeton refusé ne doit consommer ni le seau, ni l'enveloppe.
+
+    Sinon une boucle sans jeton -- gratuite pour l'attaquant, aucun appel LLM
+    déclenché -- suffirait à faire refuser les visiteurs légitimes et à épuiser
+    le budget de tous. Le contrôle d'authentification est placé AVANT les deux
+    compteurs pour cette raison, et rien ne figeait cet ordre.
+    """
+    import web.app as module
+
+    monkeypatch.setenv(ratelimit.ENV_TOKEN, "secret-de-demo")
+    budget = ratelimit.BudgetGlobal(max_calls=1000)
+    module.app.state.llm_budget = budget
+
+    for _ in range(10):
+        assert client.post("/api/simulate/unprotected").status_code == 401
+
+    assert budget.stats()["consommes"] == 0
+    assert module.app.state.rate_limiter.stats()["clients_suivis"] == 0
 
 
 def test_la_garde_lit_le_limiteur_de_l_application(client):
@@ -302,17 +345,16 @@ def test_la_garde_lit_le_limiteur_de_l_application(client):
     assert reponse.headers["Retry-After"] == "42"
 
 
-def test_l_enveloppe_epuisee_repond_503_et_oriente(client, monkeypatch):
+def test_l_enveloppe_epuisee_repond_503_et_oriente(client):
     """503 et non 429 : ce n'est pas « ralentis », c'est « l'instance ne peut
     plus servir cet écran ». Confondre les deux enverrait le client réessayer."""
     import web.app as module
 
-    monkeypatch.setattr(
-        module.app.state, "llm_budget", ratelimit.BudgetGlobal(max_calls=0)
-    )
-    # max_calls=0 laisse passer (budget désactivé) : on force l'épuisement.
-    module.app.state.llm_budget = ratelimit.BudgetGlobal(max_calls=1)
-    module.app.state.llm_budget.check()
+    # Enveloppe d'une seule unité, déjà consommée : la requête suivante tombe
+    # sur le budget et non sur le seau (burst=2, intact).
+    epuise = ratelimit.BudgetGlobal(max_calls=1)
+    epuise.check()
+    module.app.state.llm_budget = epuise
 
     reponse = client.post("/api/simulate/unprotected")
     assert reponse.status_code == 503
@@ -329,7 +371,9 @@ def test_le_budget_n_est_entame_que_par_un_appel_qui_serait_parti(client):
 
     budget = ratelimit.BudgetGlobal(max_calls=1000)
     module.app.state.llm_budget = budget
-    # burst=2 sur le limiteur du fixture : 6 appels, 2 passent la garde.
+    # burst=2 et horloge figée dans le fixture : sur 6 appels, exactement 2
+    # passent la garde. Sans horloge figée, le nombre dépendrait de la durée
+    # des requêtes -- c'est-à-dire de la latence du réseau.
     for _ in range(6):
         client.post("/api/simulate/unprotected")
     assert budget.stats()["consommes"] == 2

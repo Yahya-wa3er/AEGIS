@@ -104,6 +104,21 @@ jobs:
         # acceptable (le modèle n'est pas entraîné), ici c'est un signal.
         # Une seule exécution suffit à le voir -- relancer pytest deux fois de
         # plus pour compter les SKIPPED coûtait trois fois le temps du job.
+        #
+        # La clé est FACTICE et l'URL pointe sur un port mort, volontairement.
+        # Défaut trouvé au lot 7.2 : les tests de limitation de débit
+        # appelaient RÉELLEMENT OpenRouter sur la machine de dev -- une dizaine
+        # d'appels payants par exécution de la suite, dans le fichier même
+        # censé prouver qu'on avait bouché Unbounded Consumption. Ils passaient
+        # ici parce qu'aucune clé n'était configurée, ce qui masquait le
+        # problème au lieu de le révéler.
+        #
+        # Avec ces deux variables, tout test qui tenterait un appel réseau
+        # échoue au lieu de dépenser. Une suite de tests qui coûte de l'argent
+        # est une suite qu'on finit par ne plus lancer.
+        env:
+          OPENROUTER_API_KEY: cle-factice-aucun-appel-ne-doit-partir
+          OPENROUTER_BASE_URL: http://127.0.0.1:9/aucun-appel-llm-en-ci
         run: |
           python -m pytest -q -rsxX 2>&1 | tee /tmp/pytest.log
           if grep -qE "^SKIPPED|s  *\[" /tmp/pytest.log; then

@@ -520,6 +520,32 @@ Détails qui comptent :
 
 Ce que ça ne fait pas, et il faut le dire : l'état vit en mémoire du processus (un redémarrage remet tout à zéro ; derrière *n* répliques le plafond réel est multiplié par *n*), l'identification par IP est faible (CGNAT d'un côté, pool d'adresses de l'autre), et on compte des **appels**, pas des **tokens** — un document maximal coûte plus qu'une requête courte, et le budget ne le voit pas. Le vrai garde-fou budgétaire reste le plafond de dépense sur la clé API, côté fournisseur ; ceci n'en est que le complément applicatif.
 
+#### Le test de limitation passait chez qui ne pouvait pas s'en servir
+
+Il faut le raconter, parce que c'est la faute la plus instructive du lot.
+
+Le test d'intégration lançait cinq requêtes sur `/api/simulate/unprotected` avec un seau réglé à `burst=2`, et vérifiait qu'un `429` finissait par tomber. Il passait. Sur une machine où la clé OpenRouter **est** configurée, il a échoué : `[200, 200, 200, 200, 200]`.
+
+Le seau se recharge en temps réel. Sans clé d'API, chaque requête échouait en quelques millisecondes : le seau n'avait pas le temps de se remplir, et les refus tombaient. Avec une clé, chaque requête déclenche un aller-retour LLM d'une seconde ou plus — à 60 jetons/minute, c'est exactement un jeton rendu par requête. Le seau se rechargeait aussi vite qu'il se vidait.
+
+Le test ne mesurait donc pas la limitation. Il mesurait la **latence du réseau**, et il donnait le bon verdict pour la mauvaise raison — sur la seule configuration où la fonctionnalité testée ne sert à rien. C'est le même défaut que la fuite de jeu de test, dans un troisième déguisement : *un chiffre vert obtenu par un mécanisme différent de celui qu'on croit observer*.
+
+Deux corrections, et la seconde était invisible depuis le poste de développement :
+
+1. **Horloge figée** dans le test d'intégration. L'arithmétique du seau devient déterministe et l'assertion peut être écrite en toutes lettres — `[500, 500, 429, 429, 429]` au lieu du très permissif « au moins un 429 », qui aurait accepté un seau mal dimensionné. Le rechargement dans le temps reste couvert par les tests unitaires à horloge pilotée, où c'est le sujet.
+
+2. **Aucun appel LLM réel.** Corollaire du diagnostic : ces tests appelaient *effectivement* OpenRouter, une dizaine de fois par exécution de la suite. Une suite de tests qui dépense de l'argent est une suite qu'on finit par ne plus lancer — et c'est particulièrement savoureux dans le fichier censé prouver qu'on a bouché *Unbounded Consumption*. `VictimAgent.handle_request` est neutralisé : passer la garde donne `500`, être refusé donne `429` ou `503`, et la distinction est nette et gratuite.
+
+La CI lance désormais toute la suite avec une clé **factice** et une URL de base pointant sur un port mort :
+
+```yaml
+env:
+  OPENROUTER_API_KEY: cle-factice-aucun-appel-ne-doit-partir
+  OPENROUTER_BASE_URL: http://127.0.0.1:9/aucun-appel-llm-en-ci
+```
+
+Sans ça, l'absence de clé sur le runner *masquait* le problème au lieu de le révéler. Vérifié : la suite complète passe en 10 s avec cette configuration, donc aucun autre test ne sortait sur le réseau.
+
 Une conséquence de conception, apprise en corrigeant : le limiteur vit sur `app.state`, pas dans une variable de module. La première version était un singleton de module, et le seul moyen de le reconfigurer dans un test était `importlib.reload(web.app)` — qui réécrit le dictionnaire du module partagé par toute la session pytest. Un test de limitation vidait le seau, et un test d'un autre fichier recevait `429` là où il attendait `404`. Le défaut n'était pas dans le test : un composant de garde qui n'est pas remplaçable sans effet de bord global n'est pas non plus déployable sans surprise.
 
 ### Couleurs et contrastes
