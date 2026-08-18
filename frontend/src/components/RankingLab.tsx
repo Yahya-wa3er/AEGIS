@@ -21,7 +21,7 @@
 import { useState } from "react";
 import { compareRanking } from "@/lib/api";
 import type { RankedDocument, RankingComparison } from "@/lib/types";
-import { Button, Empty, Loading, LookHere, Panel, Pill } from "./ui";
+import { Button, Chip, Empty, Input, Loading, LookHere, Panel, Pill, Textarea, type Tone } from "./ui";
 
 const DOMAINE =
   "bonjour merci commande livraison remboursement facture client ticket produit compte " +
@@ -88,18 +88,18 @@ export function RankingLab() {
         <div className="space-y-3">
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (
-              <button
+              <Chip
                 key={p.nom}
+                active={requete === p.requete && document === p.document && corpus === p.corpus}
                 onClick={() => {
                   setRequete(p.requete);
                   setDocument(p.document);
                   setCorpus(p.corpus);
                   setResultat(null);
                 }}
-                className="rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/40 hover:text-[var(--text)]"
               >
                 {p.nom}
-              </button>
+              </Chip>
             ))}
           </div>
 
@@ -108,24 +108,24 @@ export function RankingLab() {
               <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
                 Requête du client
               </span>
-              <input
+              <Input
                 value={requete}
                 onChange={(e) => setRequete(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]/50"
+                className="mt-1"
               />
             </label>
             <div>
               <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
                 Corpus
               </span>
-              <div className="mt-1 flex rounded-lg border border-[var(--line)] p-0.5">
+              <div className="mt-1 flex rounded-lg border border-[var(--line-strong)] bg-[var(--surface-2)] p-0.5">
                 {(["complet", "origine"] as const).map((c) => (
                   <button
                     key={c}
                     onClick={() => setCorpus(c)}
-                    className={`rounded-md px-3 py-1.5 text-[12px] transition-colors ${
+                    className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors ${
                       corpus === c
-                        ? "bg-[var(--accent)]/15 text-[var(--accent)]"
+                        ? "bg-[var(--surface)] text-[var(--accent-strong)] shadow-[var(--shadow-card)]"
                         : "text-[var(--muted)] hover:text-[var(--text)]"
                     }`}
                   >
@@ -140,13 +140,13 @@ export function RankingLab() {
             <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
               Document injecté dans l&apos;index (jamais écrit sur disque)
             </span>
-            <textarea
+            <Textarea
               value={document}
               onChange={(e) => setDocument(e.target.value)}
               rows={4}
               spellCheck={false}
               placeholder="Laisse vide pour classer le corpus seul."
-              className="tabular mt-1 w-full resize-y rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-[12px] leading-relaxed outline-none focus:border-[var(--accent)]/50"
+              className="mt-1"
             />
           </label>
 
@@ -166,7 +166,7 @@ export function RankingLab() {
               titre="BM25 + plafond de fréquence"
               sousTitre="En production"
               badge="8/10 en pertinence"
-              badgeTone="ok"
+              badgeTone="accent"
               documents={resultat.bm25}
             />
             <Colonne
@@ -258,7 +258,7 @@ function Colonne({
   titre: string;
   sousTitre: string;
   badge: string;
-  badgeTone: "ok" | "warn";
+  badgeTone: Tone;
   documents: RankedDocument[];
 }) {
   const max = Math.max(...documents.map((d) => d.score), 1);
@@ -277,8 +277,8 @@ function Colonne({
               <div
                 className={`rounded-lg border px-3 py-2 ${
                   doc.injecte
-                    ? "border-[var(--danger)]/40 bg-[var(--danger)]/[0.08]"
-                    : "border-[var(--line)] bg-[var(--surface-2)]/40"
+                    ? "border-[var(--danger-line)] bg-[var(--danger-soft)]"
+                    : "border-[var(--line)] bg-[var(--surface-2)]"
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -293,9 +293,9 @@ function Colonne({
                     {doc.score.toFixed(2)}
                   </span>
                 </div>
-                <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.05]">
+                <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--surface-3)]">
                   <div
-                    className={`h-full rounded-full ${doc.injecte ? "bg-[var(--danger)]" : "bg-[var(--accent)]/60"}`}
+                    className={`h-full rounded-full ${doc.injecte ? "bg-[var(--danger)]" : "bg-[var(--accent)]"}`}
                     style={{ width: `${(doc.score / max) * 100}%` }}
                   />
                 </div>

@@ -193,3 +193,17 @@ export type RankingComparison = {
   overlap: RankedDocument[];
   document_injecte: string | null;
 };
+
+// -- vue d'ensemble (lot 7.1) ----------------------------------------------
+
+/** État du produit au repos. Construit sur un garde neuf : ce qu'on montre est
+ *  ce que reçoit un déploiement au démarrage, pas l'état d'une démonstration
+ *  déjà chauffée. */
+export type StatusReport = {
+  detectors: Record<string, DetectorState>;
+  fail_mode: string;
+  audit_integrity: AuditIntegrity;
+  session_isolation: SessionIsolation;
+  blocking_signals: string[];
+  signals: { id: string; mesure: string }[];
+};

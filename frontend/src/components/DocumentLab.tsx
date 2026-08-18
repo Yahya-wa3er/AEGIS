@@ -12,7 +12,7 @@ import { useState } from "react";
 import { analyzeDocument } from "@/lib/api";
 import { SIGNAL_LABELS } from "@/lib/format";
 import type { DocumentAnalysis } from "@/lib/types";
-import { Button, Empty, Loading, Meter, Panel, Pill } from "./ui";
+import { Button, Chip, Empty, Loading, Meter, Panel, Pill, Textarea, type Tone } from "./ui";
 
 const EXEMPLES: { nom: string; texte: string }[] = [
   {
@@ -76,25 +76,24 @@ export function DocumentLab() {
         <div className="space-y-3">
           <div className="flex flex-wrap gap-1.5">
             {EXEMPLES.map((e) => (
-              <button
+              <Chip
                 key={e.nom}
+                active={texte === e.texte}
                 onClick={() => {
                   setTexte(e.texte);
                   setAnalyse(null);
                 }}
-                className="rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/40 hover:text-[var(--text)]"
               >
                 {e.nom}
-              </button>
+              </Chip>
             ))}
           </div>
 
-          <textarea
+          <Textarea
             value={texte}
             onChange={(e) => setTexte(e.target.value)}
             rows={12}
             spellCheck={false}
-            className="tabular w-full resize-y rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-[12px] leading-relaxed outline-none focus:border-[var(--accent)]/50"
           />
 
           <div className="flex items-center gap-3">
@@ -139,7 +138,7 @@ export function DocumentLab() {
                 )}
 
                 {analyse.advisory_signals.length > 0 && (
-                  <div className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/[0.07] px-3 py-2">
+                  <div className="rounded-lg border border-[var(--warn-line)] bg-[var(--warn-soft)] px-3 py-2.5">
                     <div className="text-[11px] font-medium text-[var(--warn)]">
                       Signal consultatif : {analyse.advisory_signals.join(", ")}
                     </div>
@@ -161,7 +160,7 @@ export function DocumentLab() {
                 right={<Pill tone="ok">{analyse.pii_count} masquée(s)</Pill>}
                 subtitle={`Catégories : ${analyse.pii_categories.join(", ")}`}
               >
-                <pre className="tabular max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-3 text-[12px] leading-relaxed text-[var(--muted)]">
+                <pre className="tabular max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-3 text-[12px] leading-relaxed text-[var(--text)]/80">
                   {analyse.sanitized_preview}
                 </pre>
                 <p className="mt-2 text-[12px] leading-snug text-[var(--faint)]">
@@ -185,7 +184,7 @@ function Score({
 }: {
   label: string;
   value: number;
-  tone: "ok" | "warn" | "danger" | "muted";
+  tone: Tone;
 }) {
   return (
     <div>

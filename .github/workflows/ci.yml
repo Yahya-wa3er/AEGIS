@@ -129,6 +129,17 @@ jobs:
         # existe, ce qui n'était pas le cas.
         run: python -m scripts.benchmark_latency --iterations 100 --json /tmp/latence.json
 
+      - name: Contrastes de la console (WCAG 2.1 AA)
+        # Une première version de globals.css annonçait des ratios que personne
+        # n'avait calculés : quatre échouaient, dont le texte blanc de la pilule
+        # de navigation active à 2,3:1 -- l'élément le plus cliqué de
+        # l'interface. Un jeu de couleurs se vérifie, comme un taux de détection.
+        #
+        # L'étape est dans le job Python et non dans celui du frontend : le
+        # script ne fait que lire un fichier CSS, il n'a besoin ni de node ni des
+        # dépendances de l'application.
+        run: python -m scripts.check_contrast
+
       - name: Construire la roue distribuable
         run: |
           pip install -q build

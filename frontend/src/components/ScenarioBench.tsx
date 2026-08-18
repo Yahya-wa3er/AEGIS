@@ -13,12 +13,12 @@
  * scénario annonce. Un blocage obtenu par le mauvais signal est un coup de
  * chance, pas une défense : la console le dit.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchScenarios, runScenario } from "@/lib/api";
 import { toneForScenarioVerdict } from "@/lib/format";
 import type { ScenarioRun, ScenarioSummary } from "@/lib/types";
 import { SignalGrid } from "./SignalGrid";
-import { Button, Code, Empty, Loading, LookHere, Meter, Panel, Pill } from "./ui";
+import { Button, Code, Empty, Field, Loading, LookHere, Meter, Panel, Pill } from "./ui";
 
 const POINT_LABELS: Record<string, string> = {
   on_prompt: "on_prompt · requête utilisateur",
@@ -27,16 +27,24 @@ const POINT_LABELS: Record<string, string> = {
   on_tool_result: "on_tool_result · retour d'outil",
 };
 
-export function ScenarioBench() {
+export function ScenarioBench({
+  scenarioDemande,
+  onScenarioJoue,
+}: {
+  scenarioDemande?: string | null;
+  onScenarioJoue?: () => void;
+}) {
   const [catalogue, setCatalogue] = useState<ScenarioSummary[] | null>(null);
   const [familles, setFamilles] = useState<string[]>([]);
   const [actif, setActif] = useState<string | null>(null);
   const [run, setRun] = useState<ScenarioRun | null>(null);
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
+  const demande = useRef(scenarioDemande);
+  demande.current = scenarioDemande;
 
-  // On joue le premier scénario dès l'arrivée. Un tableau de bord de sécurité
-  // qui s'ouvre sur un panneau vide demande au visiteur de deviner par où
+  // On joue un scénario dès l'arrivée. Un tableau de bord de sécurité qui
+  // s'ouvre sur un panneau vide demande au visiteur de deviner par où
   // commencer — et la plupart repartent sans avoir rien vu.
   useEffect(() => {
     let annule = false;
@@ -45,13 +53,23 @@ export function ScenarioBench() {
         if (annule) return;
         setCatalogue(c.scenarios);
         setFamilles(c.familles);
-        if (c.scenarios.length) void jouer(c.scenarios[0].id);
+        const cible = demande.current ?? c.scenarios[0]?.id;
+        if (cible) void jouer(cible);
       })
       .catch((e: Error) => !annule && setErreur(e.message));
     return () => {
       annule = true;
     };
+    // `jouer` est stable en pratique (elle ne referme que des setters), et
+    // l'inclure relancerait le chargement du catalogue à chaque rendu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Arrivée depuis la recherche globale alors que le banc est déjà monté.
+  useEffect(() => {
+    if (scenarioDemande && scenarioDemande !== actif) void jouer(scenarioDemande);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenarioDemande]);
 
   async function jouer(id: string) {
     setActif(id);
@@ -59,6 +77,7 @@ export function ScenarioBench() {
     setErreur(null);
     try {
       setRun(await runScenario(id));
+      onScenarioJoue?.();
     } catch (e) {
       setErreur((e as Error).message);
       setRun(null);
@@ -73,16 +92,16 @@ export function ScenarioBench() {
   const scenario = catalogue.find((s) => s.id === actif) ?? null;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Panel
         title="Scénarios"
         subtitle={`${catalogue.length} situations · aucun appel LLM`}
-        className="h-fit lg:sticky lg:top-4"
+        className="h-fit xl:sticky xl:top-[76px]"
       >
-        <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+        <div className="space-y-3">
           {familles.map((famille) => (
             <div key={famille}>
-              <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-[var(--faint)]">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--faint)]">
                 {famille}
               </div>
               <ul className="space-y-0.5">
@@ -92,16 +111,25 @@ export function ScenarioBench() {
                     <li key={s.id}>
                       <button
                         onClick={() => jouer(s.id)}
-                        className={`flex w-full items-baseline gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
                           actif === s.id
-                            ? "border-[var(--accent)]/50 bg-[var(--accent)]/10"
-                            : "border-transparent hover:border-[var(--line)] hover:bg-white/[0.03]"
+                            ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                            : "hover:bg-[var(--surface-2)]"
                         }`}
                       >
-                        <span className="tabular w-11 shrink-0 text-[10px] text-[var(--faint)]">
+                        <span
+                          className={`tabular w-11 shrink-0 text-[10px] ${
+                            actif === s.id ? "text-[var(--accent-strong)]" : "text-[var(--faint)]"
+                          }`}
+                        >
                           {s.est_attaque ? s.owasp : "ctrl"}
                         </span>
-                        <span className="min-w-0 flex-1 text-[12.5px] leading-snug">{s.titre}</span>
+                        <span
+                          title={s.titre}
+                          className="min-w-0 flex-1 truncate text-[12.5px] leading-snug"
+                        >
+                          {s.titre}
+                        </span>
                       </button>
                     </li>
                   ))}
@@ -124,7 +152,10 @@ export function ScenarioBench() {
             subtitle={`${scenario.famille} · ${scenario.owasp}`}
             right={
               run && !chargement ? (
-                <Pill tone={run.ecarts.length ? "danger" : toneForScenarioVerdict(run.verdict)}>
+                <Pill
+                  tone={run.ecarts.length ? "danger" : toneForScenarioVerdict(run.verdict)}
+                  solid={!run.ecarts.length && run.verdict !== "document transmis"}
+                >
                   {run.ecarts.length ? `écart : ${run.ecarts.join(", ")}` : run.verdict}
                 </Pill>
               ) : null
@@ -178,21 +209,14 @@ export function ScenarioBench() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">{label}</div>
-      <div className="mt-1">{children}</div>
-    </div>
-  );
-}
-
 /**
  * Détail du signal d'intégrité du classement.
  *
- * On affiche le TTR **avec sa bande attendue**, jamais seul : « 0,535 » ne veut
- * rien dire, « 0,535 pour une bande [0,474 ; 0,684] » explique le verdict — y
- * compris quand ce verdict est « je n'ai rien vu ».
+ * On affiche le TTR **avec sa bande attendue**, jamais seul : un rapport
+ * type/token nu ne veut rien dire, le même accompagné de la bande de la prose
+ * réelle explique le verdict — y compris quand ce verdict est « je n'ai rien
+ * vu ». Les valeurs viennent de l'exécution en cours, jamais d'un chiffre figé
+ * dans le texte : une première version en avait figé un, qui divergeait.
  */
 function StuffingCard({
   stuffing,
@@ -201,9 +225,9 @@ function StuffingCard({
 }) {
   const [bas, haut] = stuffing.expected_range;
   return (
-    <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/50 p-3">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
+    <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
           Intégrité du classement
         </span>
         <Pill tone={stuffing.flagged ? "warn" : "muted"}>
@@ -211,9 +235,9 @@ function StuffingCard({
         </Pill>
       </div>
 
-      <div className="tabular mt-2 flex items-baseline gap-4 text-sm">
+      <div className="tabular mt-2.5 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
         <span>
-          TTR <span className="text-[var(--accent)]">{stuffing.ttr.toFixed(3)}</span>
+          TTR <span className="font-semibold text-[var(--accent-strong)]">{stuffing.ttr.toFixed(3)}</span>
         </span>
         <span className="text-[var(--faint)]">
           bande [{bas.toFixed(3)} ; {haut.toFixed(3)}] · {stuffing.tokens} mots
@@ -223,22 +247,22 @@ function StuffingCard({
       <div className="relative mt-2">
         <Meter value={stuffing.ttr} tone={stuffing.flagged ? "warn" : "ok"} />
         <div
-          className="absolute top-0 h-1.5 rounded-full bg-white/[0.14]"
+          className="absolute top-0 h-1.5 rounded-full bg-[var(--text)]/10"
           style={{ left: `${bas * 100}%`, width: `${(haut - bas) * 100}%` }}
           title="bande attendue pour cette longueur"
         />
       </div>
 
       {stuffing.reason && (
-        <p className="mt-2 text-[12px] leading-snug text-[var(--warn)]">{stuffing.reason}</p>
+        <p className="mt-2.5 text-[12px] leading-snug text-[var(--warn)]">{stuffing.reason}</p>
       )}
 
       {stuffing.top_terms?.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
           {stuffing.top_terms.slice(0, 5).map(([mot, n]) => (
             <span
               key={mot}
-              className="tabular rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px] text-[var(--muted)]"
+              className="tabular rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] text-[var(--muted)]"
             >
               {mot} ×{n}
             </span>
@@ -247,10 +271,10 @@ function StuffingCard({
       )}
 
       {!stuffing.flagged && stuffing.tokens > 200 && (
-        <p className="mt-2 text-[12px] leading-relaxed text-[var(--faint)]">
+        <p className="mt-2.5 text-[12px] leading-relaxed text-[var(--muted)]">
           Le document est long et le TTR reste dans la bande : c&apos;est exactement l&apos;évasion
-          hybride documentée. Ce signal ne voit pas ce cas, et un test le fige pour que personne
-          ne prétende le contraire.
+          hybride documentée. Ce signal ne voit pas ce cas, et un test le fige pour que personne ne
+          prétende le contraire.
         </p>
       )}
     </div>

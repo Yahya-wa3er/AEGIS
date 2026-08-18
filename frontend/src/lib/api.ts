@@ -13,6 +13,7 @@ import type {
   ScenarioCatalogue,
   ScenarioRun,
   SimulationResult,
+  StatusReport,
   TestDocumentResult,
 } from "./types";
 
@@ -61,6 +62,8 @@ export const testDocument = (opts: {
       protected: opts.protectedMode,
     }),
   );
+
+export const fetchStatus = () => call<StatusReport>("/api/status");
 
 export const fetchScenarios = () => call<ScenarioCatalogue>("/api/scenarios");
 

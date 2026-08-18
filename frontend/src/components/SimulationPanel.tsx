@@ -55,7 +55,7 @@ export function SimulationPanel() {
       >
         {chargement && <Loading label="Exécution de l'agent, avec et sans protection…" />}
         {erreur && (
-          <div className="rounded-lg border border-[var(--danger)]/35 bg-[var(--danger)]/[0.08] px-3 py-2 text-[13px] text-[var(--danger)]">
+          <div className="rounded-lg border border-[var(--danger-line)] bg-[var(--danger-soft)] px-3.5 py-3 text-[13px] text-[var(--danger)]">
             {erreur}
             <p className="mt-1 text-[12px] text-[var(--muted)]">
               Cet écran est le seul à dépendre d&apos;un service externe. Le banc de scénarios et le
@@ -124,7 +124,7 @@ export function SimulationPanel() {
               return (
                 <li
                   key={entree.id}
-                  className="flex items-start gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/40 px-3 py-2"
+                  className="flex items-start gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2"
                 >
                   <span className="tabular text-[11px] text-[var(--faint)]">#{entree.id}</span>
                   <span className={`flex-1 text-[13px] leading-snug ${ok ? "" : "text-[var(--warn)]"}`}>
@@ -182,10 +182,10 @@ function Colonne({
               {executees.map((a, i) => (
                 <li
                   key={i}
-                  className={`tabular rounded border px-2 py-1 text-[12px] ${
+                  className={`tabular rounded-md border px-2 py-1 text-[12px] ${
                     SENSITIVE_TOOLS.includes(a.tool)
-                      ? "border-[var(--danger)]/40 bg-[var(--danger)]/[0.08] text-[var(--danger)]"
-                      : "border-[var(--line)] text-[var(--muted)]"
+                      ? "border-[var(--danger-line)] bg-[var(--danger-soft)] text-[var(--danger)]"
+                      : "border-[var(--line)] bg-[var(--surface-2)] text-[var(--muted)]"
                   }`}
                 >
                   {a.tool}({JSON.stringify(a.params)})
@@ -206,7 +206,7 @@ function Colonne({
             {resultat.trace.map((step, i) => (
               <li key={i} className="flex items-start gap-2 text-[12px]">
                 <span className="tabular w-4 text-[var(--faint)]">{i + 1}</span>
-                <span className="w-40 shrink-0 text-[var(--accent)]">
+                <span className="w-40 shrink-0 font-medium text-[var(--accent-strong)]">
                   {STEP_LABELS[step.step] ?? step.step}
                 </span>
                 <span className="tabular min-w-0 flex-1 break-all text-[var(--faint)]">
@@ -221,7 +221,7 @@ function Colonne({
           <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
             Réponse au client
           </div>
-          <p className="mt-1 rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/50 px-3 py-2 text-[13px] leading-relaxed">
+          <p className="mt-1 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-[13px] leading-relaxed">
             {resultat.response || "—"}
           </p>
         </div>

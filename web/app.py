@@ -306,6 +306,47 @@ class RankingComparison(BaseModel):
     document_injecte: str | None = None
 
 
+@app.get("/api/status", response_model=dict)
+def status() -> dict:
+    """État du produit au repos : capteurs, mode de défaillance, journal, sessions.
+
+    Alimente la vue d'ensemble. Volontairement construit sur un `AegisGuard`
+    neuf : ce qu'on montre ici est ce que reçoit un déploiement au démarrage, pas
+    l'état d'une session de démonstration déjà chauffée.
+
+    Les mesures publiées à côté de chaque signal sont celles du README, figées
+    ici plutôt que recalculées — les recalculer à chaque affichage donnerait des
+    chiffres qui bougent sans que rien n'ait changé.
+    """
+    guard = AegisGuard()
+    rapport = guard.robustness_report()
+    return {
+        "detectors": rapport["detectors"],
+        "fail_mode": rapport["fail_mode"],
+        "audit_integrity": rapport["audit_integrity"],
+        "session_isolation": rapport["session_isolation"],
+        "blocking_signals": sorted(guard.config.blocking_signals),
+        "signals": [
+            {
+                "id": "rules",
+                "mesure": "100 % [76-100 %] de blocage, 0 % [0-28 %] de faux positifs (12 attaques, 10 contrôles)",
+            },
+            {
+                "id": "injection_ml",
+                "mesure": "50 % [24-76 %] de faux positifs sur les documents de contrôle (5/10)",
+            },
+            {
+                "id": "rag_outlier",
+                "mesure": "86 % [60-96 %] de rappel ; 50 % [19-81 %] de faux positifs hors-domaine",
+            },
+            {
+                "id": "retrieval_stuffing",
+                "mesure": "2 familles de bourrage sur 3 ; l'hybride évade la détection",
+            },
+        ],
+    }
+
+
 @app.get("/api/scenarios", response_model=dict)
 def list_scenarios() -> dict:
     """Catalogue du banc de scénarios (lot 6), pour le sélecteur de l'interface."""

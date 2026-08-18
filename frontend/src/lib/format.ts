@@ -38,7 +38,10 @@ export const SIGNAL_LABELS: Record<string, { nom: string; quoi: string }> = {
   },
 };
 
-export type VerdictTone = "ok" | "warn" | "danger" | "muted";
+/** Le ton d'un verdict. Aligné sur `Tone` des primitives : une seule échelle
+ *  de couleur pour tout le produit, sinon deux écrans finissent par appeler
+ *  « attention » deux jaunes différents. */
+export type VerdictTone = "accent" | "ok" | "warn" | "danger" | "muted";
 
 export const VERDICT_TONE: Record<Verdict["kind"], VerdictTone> = {
   attack_succeeded: "danger",
@@ -47,13 +50,6 @@ export const VERDICT_TONE: Record<Verdict["kind"], VerdictTone> = {
   // qu'il ne devait pas, sans attaquant.
   excessive_agency: "warn",
   nominal: "ok",
-};
-
-export const TONE_CLASS: Record<VerdictTone, string> = {
-  ok: "text-[var(--ok)] border-[var(--ok)]/35 bg-[var(--ok)]/10",
-  warn: "text-[var(--warn)] border-[var(--warn)]/35 bg-[var(--warn)]/10",
-  danger: "text-[var(--danger)] border-[var(--danger)]/35 bg-[var(--danger)]/10",
-  muted: "text-[var(--muted)] border-[var(--line)] bg-white/[0.03]",
 };
 
 /** Verdict du banc de scénarios → ton visuel. */

@@ -444,30 +444,49 @@ cd frontend && npm run build && cd ..
 python -m uvicorn web.app:app --reload
 ```
 
-Quatre onglets, et un seul dépend d'un service externe.
+Barre latérale, cinq écrans, et un seul qui dépend d'un service externe.
 
-| onglet | ce qu'il montre | appel LLM |
+| écran | ce qu'il montre | appel LLM |
 |---|---|---|
-| **Banc de scénarios** | 12 situations sur les 5 points d'interception, le signal qui a tiré, celui qui avait le droit de décider | non |
+| **Vue d'ensemble** | les 4 signaux de contenu, leur rôle, leur état réel et leur taux d'erreur mesuré ; le journal, l'isolation des sessions, le mode de défaillance | non |
+| **Banc de scénarios** | 12 situations sur les 5 points d'interception, le signal qui a tiré et celui qui avait le droit de décider | non |
 | **Analyse de document** | l'arbitrage réel appliqué à un texte collé par le visiteur | non |
 | **Laboratoire de classement** | les deux classements côte à côte, document hostile injecté à la volée | non |
 | **Simulation complète** | l'agent réel, avec et sans protection | oui |
 
-Trois écrans sur quatre fonctionnent sans clé d'API : la partie du produit qui décide ne dépend d'aucun service externe, et la console doit pouvoir le montrer plutôt que l'affirmer.
+Quatre écrans sur cinq fonctionnent sans clé d'API : la partie du produit qui décide ne dépend d'aucun service externe, et la console doit pouvoir le montrer plutôt que l'affirmer. La recherche de la barre supérieure (⌘K) filtre réellement les écrans et les scénarios, titres, familles, attendus et mots-clés compris.
 
 ### Ce que la console refuse de faire
 
 **Pas de vert sur un capteur débranché.** Trois états distincts et jamais confondus : le signal a tiré, le signal s'est tu, le capteur est éteint. Un point vert sur un détecteur muet laisserait croire à une vérification qui n'a pas eu lieu — l'anti-pattern qui avait fait afficher « ✔ Comportement jugé normal » pour un modèle non entraîné.
 
-**Pas de score sans son seuil.** Le TTR s'affiche avec la bande attendue pour cette longueur. « 0,549 » ne veut rien dire ; « 0,549 pour une bande [0,469 ; 0,678] » explique le verdict, y compris quand ce verdict est « je n'ai rien vu ».
+**Pas de « actif » sans son taux d'erreur.** Chaque carte de signal porte sa mesure. Sans elle, « actif » se lit comme une garantie ; avec elle, le lecteur sait ce qu'il achète — y compris que le classifieur ML se trompe une fois sur deux hors de son registre.
+
+**Pas de score sans son seuil.** Le TTR s'affiche avec la bande attendue pour cette longueur. Un rapport type/token nu ne veut rien dire ; le même accompagné de sa bande explique le verdict, y compris quand ce verdict est « je n'ai rien vu ».
 
 **Pas de chiffre en dur.** Les valeurs affichées viennent de l'exécution en cours. Une première version du banc affichait un TTR figé dans le texte pédagogique qui divergeait de la mesure vive de 0,014 — corrigé avant livraison.
 
-**Pas de démonstration truquée.** Le laboratoire de classement présente un **arbitrage**, pas un avant/après flatteur : sur un corpus réaliste, l'ancien classement résiste mieux au bourrage que celui en production, et la console le dit quand c'est le cas. Le sélecteur de corpus (2 documents contre 14) sert à montrer que la conclusion d'une mesure de classement dépend de la taille du corpus.
+**Pas de démonstration truquée.** Le laboratoire de classement présente un **arbitrage**, pas un avant/après flatteur : sur un corpus réaliste, l'ancien classement résiste mieux au bourrage que celui en production, et la console le dit quand c'est le cas.
+
+**Pas de recherche décorative.** La barre de la charte n'a été reprise qu'à condition qu'elle cherche vraiment. Une barre de recherche qui ne cherche rien est le premier signe qu'une interface a été copiée plutôt que conçue.
+
+### Couleurs et contrastes
+
+La charte visuelle suit celle de FLUGIA : fond clair, bleu ciel comme unique couleur d'interaction, surfaces à teinte douce, badges en pilule à bordure fine, chips d'icône en carré arrondi. L'organisation, elle, est celle de ce produit — cinq écrans de banc d'essai, pas une grille de départements.
+
+Les contrastes sont **calculés, pas estimés** :
+
+```bash
+python -m scripts.check_contrast     # 12 paires, WCAG 2.1 AA
+```
+
+Une première version de `globals.css` annonçait des ratios que personne n'avait vérifiés, et quatre échouaient — dont le texte blanc de la pilule de navigation active, à **2,3:1**, sur l'élément le plus cliqué de l'interface. Le bleu de la charte fait un excellent aplat décoratif et un mauvais fond de texte ; il est donc décliné en trois valeurs, une par usage (icône blanche ≥ 3:1, texte blanc ≥ 4,5:1, texte bleu sur fond clair ≥ 4,5:1). Le script relit les variables dans la feuille de style et échoue sous le seuil ; la CI le lance à chaque commit.
+
+C'est la même exigence que partout ailleurs dans ce dépôt : un chiffre qu'on publie, on le mesure.
 
 ### Structure
 
-`page.tsx` faisait 1052 lignes : types, appels réseau, formatage, mascotte animée et rendu au même endroit. Découpé en `lib/` (types, API, formatage) et `components/` — le fichier de page en fait 133, et aucun module ne dépasse 310 lignes.
+`page.tsx` faisait 1052 lignes : types, appels réseau, formatage, mascotte animée et rendu au même endroit. Découpé en `lib/` (types, API, formatage) et `components/` — le fichier de page en fait 60, et aucun module ne dépasse 330 lignes.
 
 Aucune police distante : `next/font/google` faisait échouer le build hors ligne et derrière un proxy. Les piles système rendent la construction hermétique.
 

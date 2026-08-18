@@ -207,7 +207,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         regarder="L'attaquant ne cherche pas à passer la détection d'injection — il cherche "
                  "à ÊTRE RÉCUPÉRÉ, pour évincer les documents légitimes du contexte. "
                  "Regarde le TTR et les mots les plus répétés.",
-        tags=("classement", "bourrage"),
+        tags=("classement", "bourrage", "repetition", "profondeur"),
     ),
     Scenario(
         id="bourrage-classement-largeur",
@@ -220,7 +220,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         attendu="Signalé : aucune prose n'a un rapport type/token de 1,0.",
         regarder="L'autre bord de la même bande. La redondance du langage naturel est une "
                  "régularité qu'un texte fabriqué casse dans un sens ou dans l'autre.",
-        tags=("classement", "bourrage"),
+        tags=("classement", "bourrage", "empilement", "largeur"),
     ),
     Scenario(
         id="bourrage-classement-hybride",
@@ -239,7 +239,7 @@ SCENARIOS: tuple[Scenario, ...] = (
                  "adversaire qui connaît le contrôle le contourne — c'est pour ça que ce "
                  "signal est consultatif et non bloquant. L'injection, elle, reste bloquée "
                  "par les règles.",
-        tags=("classement", "bourrage", "evasion-connue"),
+        tags=("classement", "bourrage", "hybride", "evasion", "evasion-connue", "limite"),
     ),
     # -- excès de pouvoir ---------------------------------------------------
     Scenario(

@@ -48,12 +48,12 @@ export function SignalGrid({
           // fait que se taire. Rouge sur la règle qui vient d'arrêter une attaque
           // dirait l'inverse de ce qui s'est passé.
           const tire = bloquants.has(signal) || consultatifs.has(signal);
-          const tone = bloquants.has(signal) ? "ok" : consultatifs.has(signal) ? "warn" : "muted";
+          const tone = bloquants.has(signal) ? "accent" : consultatifs.has(signal) ? "warn" : "muted";
 
           return (
             <li
               key={signal}
-              className="flex items-start gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/50 px-3 py-2.5"
+              className="flex items-start gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2.5"
             >
               <span className="mt-1.5">
                 <Dot
@@ -71,11 +71,11 @@ export function SignalGrid({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{meta.nom}</span>
                   {signal === "rules" ? (
-                    <Pill tone="ok">bloquant</Pill>
+                    <Pill tone="accent">bloquant</Pill>
                   ) : (
                     <Pill tone="muted">consultatif</Pill>
                   )}
-                  {bloquants.has(signal) && <Pill tone="ok">a décidé le blocage</Pill>}
+                  {bloquants.has(signal) && <Pill tone="accent">a décidé le blocage</Pill>}
                   {consultatifs.has(signal) && <Pill tone="warn">aurait bloqué</Pill>}
                   {eteint && <Pill tone="danger">capteur éteint</Pill>}
                   {inconnu && <Pill tone="muted">état inconnu</Pill>}
@@ -91,7 +91,7 @@ export function SignalGrid({
       </ul>
 
       {details?.would_have_blocked && (
-        <p className="mt-3 rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/[0.07] px-3 py-2 text-[12px] leading-relaxed text-[var(--warn)]">
+        <p className="mt-3 rounded-lg border border-[var(--warn-line)] bg-[var(--warn-soft)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--warn)]">
           Un signal consultatif aurait neutralisé ce contenu s&apos;il en avait eu le droit. C&apos;est
           ce compteur qui permettra de le lui rendre — avec des chiffres plutôt qu&apos;une intuition.
         </p>

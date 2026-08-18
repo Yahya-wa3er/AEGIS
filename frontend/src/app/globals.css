@@ -1,40 +1,83 @@
 @import "tailwindcss";
 
 /*
-  Console SOC — jeu de jetons.
+  Système de couleurs — aligné sur la charte FLUGIA.
 
-  Fond très sombre, surfaces légèrement remontées, accents rares. Le principe
-  directeur : la couleur porte du SENS, elle ne décore pas. Trois teintes de
-  verdict (sûr / consultatif / bloqué), une teinte d'accent pour l'interaction,
-  et rien d'autre. Un tableau de bord de sécurité où tout est coloré est un
-  tableau de bord où plus rien ne ressort.
+  Ce qui est repris de la charte : le fond clair, le bleu ciel saturé comme
+  unique couleur d'interaction, les surfaces à teinte très douce plutôt que des
+  aplats, les bordures fines à faible contraste, et les badges en pilule à
+  bordure claire.
 
-  Contrastes vérifiés sur `--bg` : texte ~15:1, `--muted` ~7:1, chaque accent
-  au-dessus de 4,5:1. Un opérateur lit ça pendant des heures.
+  Ce qui est ajouté, parce qu'une console de sécurité en a besoin : une échelle
+  de verdict (sûr / consultatif / bloqué). Elle est construite dans le même
+  registre pastel que la charte — l'ambre est exactement celui des badges
+  « Locked », le vert et le rouge sont désaturés pour tenir à côté sans crier.
+
+  Règle qui ne change pas : la couleur porte du sens. Le bleu signale ce sur
+  quoi on peut agir, jamais un ornement. Un tableau de bord où tout est coloré
+  est un tableau de bord où plus rien ne ressort.
+
+  Contrastes CALCULÉS, pas estimés — une première version de ce fichier annonçait
+  des ratios que personne n'avait vérifiés, et quatre d'entre eux échouaient, dont
+  le texte blanc de la pilule de navigation à 2,3:1. Valeurs actuelles :
+
+  Vérification reproductible : `python -m scripts.check_contrast` recalcule les
+  douze paires réellement présentes à l'écran depuis CE fichier, et échoue si
+  l'une descend sous son seuil. La CI le lance à chaque commit.
 */
 :root {
-  --bg: #070a0f;
-  --surface: #0d131c;
-  --surface-2: #131b26;
-  --surface-3: #1a2432;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
+  --bg: #ffffff;
+  --canvas: #fcfcfd;          /* zone de travail, très légèrement en retrait */
+  --surface: #ffffff;
+  --surface-2: #f7f8f9;       /* champs, pistes de barres, lignes alternées */
+  --surface-3: #f1f3f5;
+  --hover: rgba(20, 24, 29, 0.04);
 
-  --text: #e6edf5;
-  --muted: #8b9bb0;
-  --faint: #5d6b7d;
+  --line: #ebedef;
+  --line-strong: #dde0e4;
 
-  --accent: #35d6e8;   /* interaction, sélection */
-  --ok: #3ddc84;       /* sûr, vérifié */
-  --warn: #f5b544;     /* consultatif, dégradé */
-  --danger: #ff5f56;   /* bloqué, compromis */
-  --advisory: #a78bfa; /* signal qui observe sans décider */
+  --text: #14181d;
+  --muted: #6f7783;
+  --faint: #69737f;
 
-  --grid: rgba(53, 214, 232, 0.05);
+  /* Trois bleus, parce qu'un seul ne peut pas être à la fois éclatant et
+     lisible. Le bleu de la charte (#2bb7ea) ne donne que 2,3:1 avec du blanc
+     dessus : il fait un très bon aplat décoratif et un très mauvais fond de
+     texte. Plutôt que d'assumer une pilule de navigation illisible, on garde la
+     teinte et on descend la luminosité juste ce qu'il faut.
+
+     --accent      remplissage portant une ICÔNE blanche (≥3:1 exigé)   3,37:1
+     --accent-ink  surface portant du TEXTE blanc (≥4,5:1 exigé)        4,61:1
+     --accent-strong  texte bleu sur fond clair                         4,57:1
+
+     Mesuré, pas estimé (`python -m scripts.check_contrast`). Un jeu de couleurs
+     dont on affirme les contrastes sans les calculer, c'est la même faute que
+     publier un taux sans son intervalle. */
+  --accent: #1596c8;
+  --accent-ink: #107ea6;
+  --accent-strong: #12789e;
+  --accent-soft: #eaf7fd;
+  --accent-line: #cfeaf8;
+
+  --ok: #127e54;
+  --ok-soft: #e9f7f1;
+  --ok-line: #c7ead9;
+
+  --warn: #986617;            /* l'ambre des badges « Locked », assombri pour rester lisible */
+  --warn-soft: #fdf5e8;
+  --warn-line: #f0dcb4;
+
+  --danger: #d02e2e;
+  --danger-soft: #fdeeee;
+  --danger-line: #f5cfcf;
+
+  --shadow-card: 0 1px 2px rgba(20, 24, 29, 0.04);
+  --shadow-lift: 0 6px 20px rgba(20, 24, 29, 0.07);
 }
 
 @theme inline {
   --color-bg: var(--bg);
+  --color-canvas: var(--canvas);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
@@ -43,15 +86,15 @@
   --color-muted: var(--muted);
   --color-faint: var(--faint);
   --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-danger: var(--danger);
-  --color-advisory: var(--advisory);
 
   /* Piles système : aucune requête réseau au chargement.
-     `next/font/google` faisait échouer le build hors ligne (et en CI derrière
-     un proxy). Une console qui ne se construit pas sans accès à Google Fonts
-     est fragile pour rien. */
+     `next/font/google` faisait échouer le build hors ligne et derrière un
+     proxy. Une console qui ne se construit pas sans accès à Google Fonts est
+     fragile pour rien. */
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
@@ -59,19 +102,14 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  /* Trame discrète : de la profondeur sans attirer l'œil. */
-  background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 48px 48px, 48px 48px;
-  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Chiffres alignés en colonne : indispensable dès qu'on compare des scores. */
@@ -81,7 +119,7 @@ body {
 }
 
 ::selection {
-  background: rgba(53, 214, 232, 0.28);
+  background: rgba(21, 150, 200, 0.22);
 }
 
 ::-webkit-scrollbar {
@@ -89,14 +127,15 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--surface);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-3);
+  background: #dfe3e7;
   border-radius: 8px;
+  border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #24313f;
+  background: #cdd3d9;
 }
 
 /* Balayage d'une barre indéterminée — un scan en cours. */
