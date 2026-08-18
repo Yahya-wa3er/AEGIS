@@ -116,6 +116,17 @@ class AegisConfig:
             journal non signé, en silence.
         audit_private_key_path / audit_public_key_path: surchargent la résolution
             automatique (voir `aegis_core.signing.load_signer`).
+        hidden_context: textes qui ne doivent jamais ressortir dans une réponse
+            — prompt système, consignes internes. C'est l'INTÉGRATEUR qui les
+            fournit, et il ne peut pas en être autrement : `aegis_core` ne
+            connaît pas le prompt de l'agent qu'il protège, et le deviner
+            reviendrait à chercher des phrases suspectes plutôt qu'à comparer à
+            la source réelle (voir `aegis_core.output_guard`).
+        mask_personal_data_in_output: masquer les données personnelles dans la
+            réponse, et pas seulement les secrets. Faux par défaut : dans une
+            réponse, un numéro est le plus souvent celui que l'utilisateur a
+            lui-même fourni ou celui du service qu'il demandait, et le masquer
+            ne protège personne tout en cassant la réponse.
     """
 
     # Par défaut, SEULES les règles déterministes bloquent (voir la note plus bas).
@@ -125,6 +136,8 @@ class AegisConfig:
     require_signed_audit: bool = False
     audit_private_key_path: Path | None = None
     audit_public_key_path: Path | None = None
+    hidden_context: tuple[str, ...] = ()
+    mask_personal_data_in_output: bool = False
 
     def __post_init__(self) -> None:
         unknown = set(self.required_detectors) - ALL_DETECTORS

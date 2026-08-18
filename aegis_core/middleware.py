@@ -52,6 +52,7 @@ from aegis_core.audit_log import AuditLog
 from aegis_core.behavior_detector import BehaviorDetector, BehaviorScanResult
 from aegis_core.behavior_features import ACTIONS, SESSION_LENGTH, ActionEvent
 from aegis_core.drift import ScoreObserver
+from aegis_core.output_guard import OutputGuard
 from aegis_core.config import (
     DETECTOR_BEHAVIOR,
     DETECTOR_INJECTION_ML,
@@ -176,6 +177,7 @@ class AegisGuard:
         rag_outlier_detector: RagOutlierDetector | None = None,
         pii_detector: PiiDetector | None = None,
         stuffing_detector: RetrievalStuffingDetector | None = None,
+        output_guard: OutputGuard | None = None,
         config: AegisConfig | None = None,
         session_store: SessionStore | None = None,
     ):
@@ -190,6 +192,17 @@ class AegisGuard:
         self.rag_outlier_detector = rag_outlier_detector or RagOutlierDetector()
         self.pii_detector = pii_detector or PiiDetector()
         self.stuffing_detector = stuffing_detector or RetrievalStuffingDetector()
+        # Filtre de sortie (lot 10). `is not None` et non `or` : un OutputGuard
+        # configuré sans contexte caché et sans masquage est un objet légitime,
+        # et `or` le remplacerait par le défaut au premier test de vérité.
+        self.output_guard = (
+            output_guard
+            if output_guard is not None
+            else OutputGuard(
+                hidden_context=self.config.hidden_context,
+                mask_personal_data=self.config.mask_personal_data_in_output,
+            )
+        )
         # Contrôle AU DÉMARRAGE, pas à la première requête : découvrir qu'un
         # détecteur exigé est absent au moment où un document hostile arrive,
         # c'est le découvrir trop tard (correctif P0-4).
@@ -547,8 +560,25 @@ class AegisGuard:
         })
         return scan
 
-    def on_response(self, response_text: str, doc_ids: list[str], ctx: dict[str, object]) -> None:
-        """Vérifie que la réponse finale cite bien l'une des sources fournies
+    def on_response(self, response_text: str, doc_ids: list[str], ctx: dict[str, object]) -> str:
+        """Contrôle la réponse finale et **retourne le texte à rendre** (lot 10).
+
+        Deux choses distinctes se passent ici, et il faut les garder séparées :
+
+        1. **Le filtre de sortie** (`aegis_core.output_guard`) — secrets masqués,
+           restitution du prompt système détectée, balisage actif neutralisé.
+           C'est le seul endroit du produit où AEGIS modifie ce que
+           l'utilisateur reçoit, d'où un réglage de prudence plus strict
+           qu'ailleurs : les données personnelles sont signalées et comptées,
+           pas masquées par défaut.
+        2. **La vérification de citation** (ci-dessous) — inchangée, et toujours
+           non bloquante.
+
+        Le contrôle de citation porte sur la réponse **d'origine**, pas sur la
+        version filtrée : neutraliser un balisage ne doit pas faire disparaître
+        une citation et transformer un signal de traçabilité en faux positif.
+
+        Vérifie que la réponse finale cite bien l'une des sources fournies
         (section 4.5, exigence de citation). Ne bloque et ne modifie RIEN --
         une citation manquante n'est pas une preuve d'attaque, juste un signal
         de moindre traçabilité à journaliser pour un humain qui relit. C'est la
@@ -568,6 +598,14 @@ class AegisGuard:
         journalise `neutralized_known: false`, pour que la sur-détection qui en
         découle soit lisible plutôt que mystérieuse.
         """
+        sortie = self.output_guard.scan(response_text)
+        if sortie.flagged:
+            self.audit_log.log({
+                "type": "output_scan",
+                "agent": ctx.get("agent"),
+                **sortie.as_dict(),
+            })
+
         raw = ctx.get(NEUTRALIZED_CTX_KEY)
         known = isinstance(raw, (set, frozenset, list, tuple))
         neutralized = set(raw) if known else set()  # type: ignore[arg-type]
@@ -583,6 +621,7 @@ class AegisGuard:
             "cited": cited,
             "flagged": not valid,
         })
+        return sortie.text
 
     def robustness_report(self) -> dict[str, object]:
         """Résumé chiffré de l'activité surveillée, pour le dashboard/la démo."""

@@ -225,6 +225,58 @@ function Colonne({
             {resultat.response || "—"}
           </p>
         </div>
+
+        {resultat.output_scan && (
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--faint)]">
+              Filtre de sortie
+            </div>
+            {resultat.output_scan.modified ? (
+              <div className="mt-1 space-y-1.5">
+                <p className="rounded-lg border border-[var(--line)] px-3 py-2 text-[12px] leading-relaxed text-[var(--faint)] line-through">
+                  {resultat.output_scan.avant}
+                </p>
+                <p className="rounded-lg border border-[var(--danger-line)] bg-[var(--danger-soft)] px-3 py-2 text-[13px] leading-relaxed">
+                  {resultat.output_scan.apres}
+                </p>
+                <p className="text-[12px] text-[var(--danger)]">
+                  Réponse modifiée avant remise au client.
+                </p>
+              </div>
+            ) : resultat.output_scan.flagged ? (
+              <p className="mt-1 text-[12px] text-[var(--warn)]">
+                Vu et journalisé, mais rien n&apos;a été changé dans la réponse.
+              </p>
+            ) : (
+              <p className="mt-1 text-[12px] text-[var(--ok)]">Rien à signaler.</p>
+            )}
+            {(resultat.output_scan.secrets_masques.length > 0 ||
+              resultat.output_scan.donnees_personnelles.length > 0 ||
+              resultat.output_scan.contexte_restitue.length > 0 ||
+              resultat.output_scan.balisage_neutralise.length > 0) && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {resultat.output_scan.secrets_masques.map((s) => (
+                  <Pill key={`secret-${s}`} tone="danger">
+                    secret masqué : {s}
+                  </Pill>
+                ))}
+                {resultat.output_scan.donnees_personnelles.map((s) => (
+                  <Pill key={`donnee-${s}`} tone="warn">
+                    donnée personnelle {resultat.output_scan!.donnees_personnelles_masquees ? "masquée" : "signalée"} : {s}
+                  </Pill>
+                ))}
+                {resultat.output_scan.contexte_restitue.length > 0 && (
+                  <Pill tone="danger">prompt système restitué</Pill>
+                )}
+                {resultat.output_scan.balisage_neutralise.map((b) => (
+                  <Pill key={`balisage-${b}`} tone="warn">
+                    balisage neutralisé : {b}
+                  </Pill>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </Panel>
   );

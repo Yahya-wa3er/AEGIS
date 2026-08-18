@@ -245,6 +245,45 @@ Le system prompt de `VictimAgent` exige que chaque réponse cite le document uti
 
 `aegis_core/pii_detector.py` masque, dans chaque document RÉCUPÉRÉ ET NON NEUTRALISÉ, les données qui n'ont rien à faire dans un contexte envoyé à un LLM tiers : emails, IBAN, numéros de carte bancaire, numéros de téléphone français, clés d'API. C'est un troisième signal, indépendant des deux autres (`injection_detector.py`, `rag_outlier_detector.py`) : un document parfaitement légitime peut très bien contenir une donnée sensible laissée par erreur -- ce n'est pas une question de confiance envers le document, mais d'hygiène. Uniquement des règles regex, aucun entraînement nécessaire.
 
+## Filtrage de sortie (LLM02/08/10, lot 10)
+
+Tout ce qui précède filtre ce qui **entre** dans l'agent : documents, requêtes, retours d'outils. `aegis_core/output_guard.py` est le premier composant qui filtre ce qui en **sort** -- la réponse effectivement remise à l'utilisateur. C'est une différence de nature, pas de degré : un faux positif à l'entrée coûte un peu de contexte perdu ; un faux positif à la sortie **abîme une réponse légitime**. La mesure ci-dessous (`scripts/measure_output_guard.py`) traite donc ce chiffre comme la porte qui compte, séparément du taux de détection.
+
+### Secrets et données personnelles n'ont pas le même traitement, et ce n'est pas un oubli
+
+`OutputGuard` masque les **secrets** sans condition (clés d'API, tout ce qui n'a de valeur que pour un attaquant), mais se limite à **signaler** les **données personnelles** (téléphone, email, IBAN) sans les masquer, sauf activation explicite (`mask_personal_data=True`). Dans une réponse, un numéro de téléphone est le plus souvent celui que le client a lui-même fourni ou celui du service qu'il demandait -- le masquer ne protège personne et casse la réponse pour rien. Les deux composants partagent leurs validateurs (`aegis_core.pii_detector.VALIDATEURS`) pour qu'ils ne puissent pas diverger silencieusement sur ce qui compte comme une correspondance valide.
+
+### Détecter la fuite du prompt système sans deviner sa formulation
+
+`aegis_core/output_guard.py` compare la réponse au(x) texte(s) déclarés sensibles (typiquement le prompt système de l'agent protégé, transmis via `hidden_context`) par **empreintes de n-grammes de mots** plutôt que par mots-clés : cela détecte une restitution verbatim quelle que soit sa formulation d'introduction (« Bien sûr, voici ce qu'on m'a demandé... »), sans qu'il soit nécessaire de deviner à l'avance comment le modèle introduirait la fuite. Les fragments détectés sont **fusionnés en passages lisibles** avant d'être journalisés : un passage de vingt mots produit treize empreintes qui se chevauchent, et en journaliser treize serait illisible pour qui relit. Limite assumée et testée : c'est lexical, pas sémantique -- une **paraphrase** du prompt système échappe entièrement au contrôle (`tests/test_output_guard.py::test_la_paraphrase_echappe_au_controle`).
+
+### Trois faux positifs réels, trouvés par la mesure et corrigés
+
+Le corpus d'évaluation (`data/output_responses.jsonl`) contient des cas délibérément désagréables : ce qui ressemble à une attaque sans en être une. La première mesure a trouvé trois réponses légitimes modifiées à tort :
+
+* un extrait de code cité en exemple (`bouton.onclick = validerFormulaire`) neutralisé parce que la première version balayait tout le texte à la recherche de `on...=` -- corrigé en scopant la recherche des attributs d'événement à l'intérieur des vraies balises `<...>` ;
+* « Le fichier data: 3 colonnes... » neutralisé parce que le motif d'URL exécutable acceptait `data:` nu -- corrigé en exigeant la structure `data:<type>/<sous-type>` d'une URI de données ;
+* une image de documentation neutralisée parce que la première version supprimait **toutes** les images distantes -- corrigé en ne neutralisant, faute de liste d'hôtes autorisés, que les images dont l'URL porte une **requête** (`?...`).
+
+Les trois cas sont figés par des tests de régression. Le troisième documente aussi sa propre limite : une charge encodée dans le **chemin** plutôt que la requête (`.../exfil/le-secret-ici.png`) échappe à l'heuristique -- seule une liste explicite d'hôtes autorisés (`allowed_image_hosts`) ferme ce trou, et c'est écrit, pas gommé.
+
+Un bug préexistant, sans rapport avec le lot, a été trouvé au passage : le motif `CARTE_BANCAIRE` de `pii_detector.py` masquait une référence de dossier (`REF-2026-000418291`) comme un numéro de carte, et avalait le séparateur qui suivait. Corrigé par un contrôle de **Luhn** (`luhn_valide`) partagé avec `OutputGuard`, et une limite de motif qui ne se termine plus sur un séparateur.
+
+### Ce que la mesure dit
+
+```
+détection (à signaler)            : 100% [76%-100%] (12/12)
+neutralisation effective          : 100% [65%-100%] (7/7)
+MODIFICATION injustifiée          : 0% [0%-18%] (0/18)
+signalement injustifié            : 0% [0%-18%] (0/18)
+```
+
+`python -m scripts.measure_output_guard` échoue (code 1) si au moins une réponse légitime est modifiée -- c'est la porte bloquante en CI. Le signalement injustifié, lui, ne casse rien et n'est qu'affiché : un journal qui crie sur du trafic normal finit ignoré, mais rien n'est perdu pour l'utilisateur.
+
+### Un contrat qui change de sens
+
+`ResponseHook` retournait `None` (un simple observateur) ; il retourne désormais le **texte à rendre**, puisque c'est la première fois qu'AEGIS a quelque chose à substituer. Une intégration tierce écrite pour l'ancien contrat retourne encore `None` : `victim/agent.py::_rendu` traite tout retour non textuel comme « rien à changer » et journalise un avertissement, plutôt que d'afficher la chaîne littérale « None » à un utilisateur -- une panne bien plus grave que l'absence de filtrage.
+
 ## Manipulation du classement : la faille que la démo exposait sans le dire
 
 Le retrieval de démonstration classait les documents par **nombre brut de mots communs** avec la requête, sans normalisation par la longueur :
@@ -850,7 +889,17 @@ Trois limites, toutes mesurées.
 
 ### Assainissement des documents / PII (section 4.5)
 
-Uniquement des règles regex (comme la V0 du détecteur d'injection) : rapide et explicable, mais ça manque forcément ce qu'un regex ne peut pas anticiper par construction -- une donnée déguisée (espaces insérés dans un numéro de carte, IBAN écrit avec des mots), un format non couvert (numéro de téléphone étranger hors format français), ou un identifiant sensible métier qui ne ressemble à aucun des motifs codés en dur (`PII_PATTERNS` dans `aegis_core/pii_detector.py`). Un classifieur ML entraîné sur des exemples annotés (type NER pour données personnelles) généraliserait mieux, au prix d'un entraînement -- même compromis que la V0 du détecteur d'injection avant sa Phase 2. Le motif "carte bancaire" (13 à 16 chiffres consécutifs) peut aussi produire un faux positif sur une longue suite de chiffres qui n'est pas une carte (ex. un identifiant de commande à 14 chiffres) -- assumé : mieux vaut masquer par excès dans ce cas précis qu'oublier une vraie donnée sensible.
+Uniquement des règles regex (comme la V0 du détecteur d'injection) : rapide et explicable, mais ça manque forcément ce qu'un regex ne peut pas anticiper par construction -- une donnée déguisée (espaces insérés dans un numéro de carte, IBAN écrit avec des mots), un format non couvert (numéro de téléphone étranger hors format français), ou un identifiant sensible métier qui ne ressemble à aucun des motifs codés en dur (`PII_PATTERNS` dans `aegis_core/pii_detector.py`). Un classifieur ML entraîné sur des exemples annotés (type NER pour données personnelles) généraliserait mieux, au prix d'un entraînement -- même compromis que la V0 du détecteur d'injection avant sa Phase 2. Le motif "carte bancaire" a été resserré au lot 10 (contrôle de Luhn, borne de fin corrigée) après un faux positif réel sur une référence de dossier -- voir "Filtrage de sortie".
+
+### Filtrage de sortie (LLM02/08/10, lot 10)
+
+Trois limites, toutes testées plutôt que simplement affirmées.
+
+**La détection de fuite du prompt système est lexicale, pas sémantique.** Une restitution verbatim est détectée quelle que soit sa phrase d'introduction (empreintes de n-grammes) ; une **paraphrase** ne l'est pas, et ne peut pas l'être sans un modèle d'inférence. `test_la_paraphrase_echappe_au_controle` fige cette limite pour qu'elle ne soit pas oubliée le jour où quelqu'un annoncera « AEGIS empêche la fuite du prompt système ».
+
+**L'exfiltration par image peut se cacher dans le chemin.** Sans `allowed_image_hosts` explicite, seules les URL d'image portant une **requête** (`?...`) sont neutralisées -- une charge encodée dans le chemin (`.../exfil/le-secret-ici.png`) passe. `test_l_exfiltration_par_le_chemin_echappe_a_l_heuristique` le documente. La correction robuste existe (liste d'hôtes autorisés) mais n'est pas activée par défaut, faute de connaître par avance les hôtes légitimes d'un déploiement donné.
+
+**Les données personnelles ne sont signalées, pas masquées, par défaut.** C'est un choix, pas un oubli (voir plus haut) -- mais cela veut dire qu'un opérateur qui veut du masquage systématique doit l'activer explicitement (`mask_personal_data=True`), et que le comportement par défaut laisse repartir un IBAN ou un email tel quel.
 
 ## Couverture OWASP GenAI LLM Top 10 — édition 2026
 
@@ -861,15 +910,15 @@ Le tableau ci-dessous est une évaluation honnête de ce qui est réellement cou
 | # | Risque 2026 | Couverture | Ce qui manque |
 |---|---|---|---|
 | LLM01 | Prompt Injection *(étendu au cross-modal)* | ⚠️ partielle | Directe (requête), indirecte (documents) et de second ordre (retours d'outils) désormais scannées, sur les vues normalisées (Unicode, encodage, balisage). Reste : règles francophones, contournables par l'anglais ; rien en cross-modal. |
-| LLM02 | Sensitive Information Disclosure | ⚠️ entrée et journal | PII masquée dans les documents récupérés ; journal d'audit pseudonymisé avec coffre séparé et effaçable (RGPD art. 17). **Aucun filtre de sortie.** |
+| LLM02 | Sensitive Information Disclosure | ⚠️ entrée, journal **et sortie** | PII masquée dans les documents récupérés ; journal d'audit pseudonymisé avec coffre séparé et effaçable (RGPD art. 17) ; depuis le lot 10, la **réponse finale** est aussi scannée — secrets masqués sans condition, données personnelles signalées (masquage optionnel, voir "Filtrage de sortie"). Manque : le partage des motifs avec `PiiDetector` couvre le texte, pas les images ni les pièces jointes. |
 | LLM03 | **Excessive Agency** *(6ᵉ → 3ᵉ)* | ⚠️ partielle | Allow-list deny-by-default : la bonne base, et l'atout principal du projet. Manque : `sensitive_tools` sans effet, plafond de montant contournable par typage, pas de liste blanche de destinataires, pas de validation humaine, pas de quota. |
 | LLM04 | Supply Chain *(3ᵉ → 4ᵉ)* | ⚠️ partielle | Plus de chargement pickle, dépendances figées, artefacts vérifiés par SHA-256. Manque : SBOM, signature du bundle de modèles, provenance. |
 | LLM05 | Data and Model Poisoning | ⚠️ partielle | Détection d'outliers à la récupération. Rien à l'indexation, aucune provenance ni signature de document. |
 | LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | ⚠️ partielle | Trois états bornés : la mémoire par session (expiration + éviction), le **débit par client** (seau à jetons) et l'**enveloppe globale d'appels LLM** sur fenêtre glissante, avec jeton partagé facultatif — `web/ratelimit.py`. Manque : budget de **jetons** et plafond de **coût** (on compte des appels, pas des tokens), borne sur les boucles d'agent, et les compteurs vivent en mémoire de processus — derrière plusieurs répliques, le plafond réel est multiplié par leur nombre. |
 | LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ partielle | Vérification de citation, plus une **vérification d'ancrage numérique et lexicale** (`aegis_core/grounding.py`) : une réponse générée dont un chiffre ou un identifiant n'apparaît pas dans ses sources est rejetée, pas corrigée. Manque l'ancrage **sémantique** : « bloque 100 % » et « laisse passer 100 % » ont les mêmes chiffres et passent tous les deux — il faudrait un modèle d'inférence. Les nombres en toutes lettres échappent aussi au contrôle. |
-| LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
+| LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | ⚠️ partielle | Depuis le lot 10, la réponse finale est comparée par empreintes de n-grammes au(x) texte(s) déclarés `hidden_context` (le prompt système de l'agent protégé) : une restitution mot pour mot est détectée et journalisée. Manque : c'est **lexical, pas sémantique** — une paraphrase du prompt système échappe entièrement au contrôle (test dédié, figé pour ne pas être oublié). |
 | LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF, classement BM25 (longueur normalisée) et détection de bourrage de classement — **évasion hybride mesurée et non couverte**. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire, pas de plafond sur la part d'un document dans le contexte. |
-| LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | 🔴 absente | Les retours d'outils et la réponse finale traversent sans validation. Le frontend échappe correctement (React, pas de `dangerouslySetInnerHTML`), mais c'est le seul rempart et il est côté client. |
+| LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | ⚠️ partielle | Lot 10 : la réponse finale est neutralisée côté serveur avant remise — balises actives (`script`, `iframe`, ...), gestionnaires d'événement (scopés aux vraies balises), schémas d'URL exécutables (`javascript:`, `data:`), et images distantes porteuses d'une requête sans hôte autorisé. Mesuré sur un corpus adversarial-mais-légitime : 0 % de réponses légitimes modifiées. Manque : l'exfiltration par image dont la charge est encodée dans le **chemin** plutôt que la requête échappe à l'heuristique sans liste d'hôtes (limite documentée, testée). Le frontend échappe toujours correctement en défense en profondeur (React, pas de `dangerouslySetInnerHTML`). |
 
 Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py` étaient ceux de l'édition **2023** sous un en-tête « 2025 » (`LLM06 Sensitive Information Disclosure`, `LLM08 Excessive Agency`). Corrigé — voir la table de correspondance en tête de ce fichier.
 
@@ -895,6 +944,7 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Limitation de consommation (LLM06) | ✅ Lot 7.2 — seau à jetons par client, enveloppe globale sur fenêtre glissante, jeton partagé ; compte des appels, pas des tokens |
 | Assistant sécurité ancré | ✅ Lot 8 — réponses composées d'extraits cités, reformulation LLM facultative rejetée si un chiffre n'est pas soutenu, mode « essaie de me pirater » sans appel LLM |
 | Vérification d'ancrage (LLM07) | ⚠️ Lot 8 — ancrage numérique et lexical vérifié ; ancrage sémantique (NLI) non fait |
+| Filtrage de sortie (LLM02/08/10) | ⚠️ Lot 10 — secrets masqués sans condition, données personnelles signalées (masquage optionnel), restitution du prompt système détectée par empreintes, balisage actif et URL exécutables neutralisés ; mesuré à 0 % de réponses légitimes modifiées, mais lexical (pas de paraphrase, pas d'image exfiltrée par le chemin) |
 
 ## En une phrase
 

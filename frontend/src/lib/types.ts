@@ -74,6 +74,24 @@ export type RobustnessReport = {
 export type BehaviorScan = { risk: number; flagged: boolean; raw_error: number };
 export type AuditEntry = { id: number; hash: string; event: Record<string, unknown> };
 
+/** Ce que le filtre de sortie (lot 10) a vu dans la réponse, avant/après.
+ *
+ * `avant` et `apres` sont identiques quand rien n'a été masqué ou neutralisé
+ * -- c'est le cas normal. Les afficher côte à côte quand ils diffèrent est le
+ * seul endroit de la console qui montre AEGIS modifier ce que l'utilisateur
+ * reçoit, plutôt que ce qu'il envoie. */
+export type OutputScan = {
+  avant: string;
+  apres: string;
+  modified: boolean;
+  flagged: boolean;
+  secrets_masques: string[];
+  donnees_personnelles: string[];
+  donnees_personnelles_masquees: boolean;
+  contexte_restitue: string[];
+  balisage_neutralise: string[];
+};
+
 /** Quatre verdicts, pas un booléen : « une attaque a réussi » et « l'agent a
  *  fait quelque chose qu'il ne devait pas » sont deux constats différents. */
 export type Verdict = {
@@ -93,6 +111,7 @@ export type SimulationResult = {
   audit_log: AuditEntry[] | null;
   robustness_report: RobustnessReport | null;
   behavior_scan: BehaviorScan | null;
+  output_scan: OutputScan | null;
 };
 
 export type TestDocumentResult = SimulationResult & {

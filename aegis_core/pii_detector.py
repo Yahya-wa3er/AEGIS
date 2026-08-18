@@ -30,7 +30,10 @@ PII_PATTERNS: tuple[tuple[str, str], ...] = (
     # IBAN : 2 lettres pays + 2 chiffres de contrôle + jusqu'à 30 caractères alphanumériques.
     ("IBAN", r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b"),
     # Carte bancaire : 13 à 16 chiffres, groupés ou non par 4.
-    ("CARTE_BANCAIRE", r"\b(?:\d[ -]?){13,16}\b"),
+    # Se termine sur un CHIFFRE : la version précédente, `(?:\d[ -]?){13,16}`,
+    # avalait le séparateur final et collait le mot suivant au marqueur
+    # (« carte [CARTE_BANCAIRE_MASQUÉ]expire »). Confirmé par Luhn ci-dessous.
+    ("CARTE_BANCAIRE", r"\b(?:\d[ -]?){12,15}\d\b"),
     # Téléphone français : 0X XX XX XX XX (espaces, points ou tirets en séparateur, ou aucun).
     ("TELEPHONE", r"\b0[1-9](?:[ .-]?\d{2}){4}\b"),
     # Clés d'API courantes (OpenAI/OpenRouter sk-..., AWS AKIA..., tokens génériques longs).
@@ -52,6 +55,38 @@ class RedactionResult:
     count: int = 0
 
 
+def luhn_valide(chiffres: str) -> bool:
+    """Somme de contrôle de Luhn — le test que porte tout vrai numéro de carte.
+
+    Ajouté au lot 10, après une mesure. Le motif seul (13 à 16 chiffres avec
+    séparateurs) masquait « REF-2026-000418291 » : un numéro de dossier détruit
+    dans le contexte envoyé au modèle, donc une information perdue pour l'agent
+    et un faux positif invisible, puisque la donnée disparaissait avant que
+    quiconque puisse constater le problème.
+
+    Luhn est déterministe, coûte trois lignes, et écarte la quasi-totalité des
+    suites de chiffres qui ne sont pas des cartes. Ce qu'il ne fait pas : il
+    valide une somme de contrôle, pas l'existence d'un compte — un nombre
+    aléatoire a une chance sur dix de passer.
+    """
+    chiffres = [int(c) for c in chiffres if c.isdigit()]
+    if len(chiffres) < 13:
+        return False
+    total = 0
+    for position, chiffre in enumerate(reversed(chiffres)):
+        if position % 2 == 1:
+            chiffre *= 2
+            if chiffre > 9:
+                chiffre -= 9
+        total += chiffre
+    return total % 10 == 0
+
+
+# Validateurs facultatifs par catégorie : un motif qui reconnaît la FORME peut
+# être confirmé par un contrôle qui reconnaît la VALEUR.
+VALIDATEURS = {"CARTE_BANCAIRE": luhn_valide}
+
+
 class PiiDetector:
     """Masque les données personnelles/secrets détectés dans un texte, par regex."""
 
@@ -63,7 +98,21 @@ class PiiDetector:
         redacted_text = text
 
         for label, pattern in PII_PATTERNS:
-            redacted_text, n = re.subn(pattern, f"[{label}_MASQUÉ]", redacted_text)
+            validateur = VALIDATEURS.get(label)
+            if validateur is None:
+                redacted_text, n = re.subn(pattern, f"[{label}_MASQUÉ]", redacted_text)
+            else:
+                compte = 0
+
+                def _remplace(correspondance: "re.Match[str]", _label=label, _valide=validateur) -> str:
+                    nonlocal compte
+                    if not _valide(correspondance.group(0)):
+                        return correspondance.group(0)
+                    compte += 1
+                    return f"[{_label}_MASQUÉ]"
+
+                redacted_text = re.sub(pattern, _remplace, redacted_text)
+                n = compte
             if n > 0:
                 categories_hit.append(label)
                 total += n

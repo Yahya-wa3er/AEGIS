@@ -76,6 +76,7 @@ jobs:
         run: |
           python -m scripts.generate_rag_corpus
           python -m scripts.generate_behavior_sessions
+          python -m scripts.generate_output_corpus
           # --porcelain plutôt que `git diff` : il attrape aussi les fichiers
           # NOUVEAUX, c'est-à-dire le cas où le générateur produit un jeu que
           # personne n'a commité.
@@ -124,6 +125,15 @@ jobs:
           if grep -qE "^SKIPPED|s  *\[" /tmp/pytest.log; then
             echo "::warning::des tests ont été sautés en CI -- vérifier tests/conftest.py"
           fi
+
+      - name: Filtre de sortie — aucune réponse légitime modifiée
+        # Porte séparée du red-teaming ci-dessous : celui-là mesure ce qui entre
+        # (LLM01/05/09), celui-ci mesure ce qui SORT (LLM02/08/10) -- le seul
+        # composant du produit qui change le texte reçu par l'utilisateur. Le
+        # script échoue si au moins une réponse légitime du corpus a été
+        # modifiée ; le signalement injustifié, lui, est toléré et seulement
+        # affiché.
+        run: python -m scripts.measure_output_guard
 
       - name: Red-teaming (porte de non-régression)
         # Échoue si le taux de blocage descend sous le plancher OU si les faux

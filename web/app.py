@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from aegis_core.grounding import GroundingVerifier
 from aegis_core.model_registry import load_registry
 from aegis_core.injection_detector import InjectionDetector
+from aegis_core.config import AegisConfig
 from aegis_core.middleware import AegisGuard
 from aegis_core.pii_detector import PiiDetector
 from aegis_core.rag_outlier_detector import RagOutlierDetector
@@ -30,7 +31,7 @@ from redteam.payloads import PAYLOADS
 from redteam.run_scenarios import ecarts, joue
 from victim import rag, tools
 from victim.scenarios import SCENARIOS, SCENARIOS_PAR_ID, familles
-from victim.agent import VictimAgent
+from victim.agent import SYSTEM_PROMPT, VictimAgent
 from victim.llm_client import get_completion
 from web import assistant, ratelimit
 
@@ -291,6 +292,30 @@ class SimulationResult(BaseModel):
     audit_log: list[dict] | None = None
     robustness_report: dict | None = None
     behavior_scan: dict | None = None
+    output_scan: dict | None = None
+
+
+def _on_response_avec_capture(guard: AegisGuard, capture: dict) -> object:
+    """Enveloppe `guard.on_response` pour que la démo puisse montrer l'avant/après.
+
+    `AegisGuard.on_response` ne retourne QUE le texte filtré (c'est son
+    contrat, lot 10) : le journal d'audit garde une trace de ce qui a été vu,
+    mais pas le texte d'origine côte à côte avec le texte rendu. Pour l'écran
+    "avant / après" de la console, il faut les deux en même temps -- d'où cette
+    capture locale à la requête, plutôt qu'un changement du contrat public.
+
+    `output_guard.scan` est un calcul pur, sans effet de bord : l'appeler ici
+    en plus de celui que fait `on_response` ne journalise rien deux fois.
+    """
+
+    def hook(response_text: str, doc_ids: list[str], ctx: dict[str, object]) -> str:
+        sortie = guard.output_guard.scan(response_text)
+        capture["avant"] = response_text
+        capture["apres"] = sortie.text
+        capture.update(sortie.as_dict())
+        return guard.on_response(response_text, doc_ids, ctx)
+
+    return hook
 
 
 class TestDocumentRequest(BaseModel):
@@ -318,12 +343,13 @@ def simulate(mode: str, request: Request) -> SimulationResult:
     _garde_appels_llm(request)
     tools.reset()
 
+    output_scan_capture: dict = {}
     if mode == "protected":
-        guard = AegisGuard()
+        guard = AegisGuard(config=AegisConfig(hidden_context=(SYSTEM_PROMPT,)))
         agent = VictimAgent(
             on_retrieval=guard.on_retrieval,
             on_tool_call=guard.on_tool_call,
-            on_response=guard.on_response,
+            on_response=_on_response_avec_capture(guard, output_scan_capture),
             on_prompt=guard.on_prompt,
             on_tool_result=guard.on_tool_result,
         )
@@ -363,6 +389,7 @@ def simulate(mode: str, request: Request) -> SimulationResult:
         audit_log=audit_log,
         robustness_report=report,
         behavior_scan=behavior_scan,
+        output_scan=output_scan_capture or None,
     )
 
 
@@ -428,7 +455,7 @@ def status() -> dict:
     ici plutôt que recalculées — les recalculer à chaque affichage donnerait des
     chiffres qui bougent sans que rien n'ait changé.
     """
-    guard = AegisGuard()
+    guard = AegisGuard(config=AegisConfig(hidden_context=(SYSTEM_PROMPT,)))
     rapport = guard.robustness_report()
     return {
         "detectors": rapport["detectors"],
@@ -629,12 +656,13 @@ def test_document(req: TestDocumentRequest, request: Request) -> TestDocumentRes
     tools.reset()
     document = rag.Document(id=payload.id, content=payload.content)
 
+    output_scan_capture: dict = {}
     if req.protected:
-        guard = AegisGuard()
+        guard = AegisGuard(config=AegisConfig(hidden_context=(SYSTEM_PROMPT,)))
         agent = VictimAgent(
             on_retrieval=guard.on_retrieval,
             on_tool_call=guard.on_tool_call,
-            on_response=guard.on_response,
+            on_response=_on_response_avec_capture(guard, output_scan_capture),
             on_prompt=guard.on_prompt,
             on_tool_result=guard.on_tool_result,
         )
@@ -669,6 +697,7 @@ def test_document(req: TestDocumentRequest, request: Request) -> TestDocumentRes
         audit_log=audit_log,
         robustness_report=report,
         behavior_scan=behavior_scan,
+        output_scan=output_scan_capture or None,
         document_id=payload.id,
         document_category=payload.category,
         document_content=payload.content,

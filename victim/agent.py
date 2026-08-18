@@ -106,7 +106,14 @@ PromptHook = Callable[[str, dict[str, object]], object]
 ToolResultHook = Callable[[str, object, dict[str, object]], str]
 RetrievalHook = Callable[[list[rag.Document], dict[str, object]], list[rag.Document]]
 ToolCallHook = Callable[[str, dict[str, object], dict[str, object]], tuple[str, str | None]]
-ResponseHook = Callable[[str, list[str], dict[str, object]], None]
+# Le hook de réponse retourne désormais le TEXTE À RENDRE (lot 10).
+#
+# Changement de contrat assumé : c'est le premier point d'interception où AEGIS
+# peut modifier ce que l'utilisateur reçoit, et un hook qui ne peut rien
+# retourner ne peut rien filtrer. `_rendu` ci-dessous rattrape les intégrations
+# qui suivaient l'ancien contrat (retour `None`) plutôt que de leur livrer la
+# chaîne « None » à la place de la réponse.
+ResponseHook = Callable[[str, list[str], dict[str, object]], "str | None"]
 
 
 class _AllowAll:
@@ -133,8 +140,27 @@ def _default_tool_call_hook(tool_name: str, params: dict[str, object], ctx: dict
     return "allow", None
 
 
-def _default_response_hook(response_text: str, doc_ids: list[str], ctx: dict[str, object]) -> None:
-    return None
+def _default_response_hook(response_text: str, doc_ids: list[str], ctx: dict[str, object]) -> str:
+    return response_text
+
+
+def _rendu(retour: object, original: str) -> str:
+    """Texte à rendre, en tolérant un hook écrit pour l'ancien contrat.
+
+    Un hook tiers qui retourne `None` — ce que faisait le contrat précédent —
+    ferait afficher « None » à la place de la réponse. Livrer une chaîne vide ou
+    un littéral Python à un utilisateur parce qu'une intégration n'a pas été
+    mise à jour serait une panne bien pire que l'absence de filtrage.
+    """
+    if isinstance(retour, str):
+        return retour
+    if retour is not None:
+        logger.warning(
+            "on_response a retourné un %s au lieu d'une chaîne : la réponse d'origine "
+            "est rendue telle quelle, sans filtrage de sortie.",
+            type(retour).__name__,
+        )
+    return original
 
 
 class VictimAgent:
@@ -221,7 +247,8 @@ class VictimAgent:
 
         if not assistant_message.tool_calls:
             response_text = assistant_message.content or ""
-            self.on_response(response_text, doc_ids, ctx)  # <-- point d'interception AEGIS
+            # Point d'interception AEGIS : le retour REMPLACE la réponse.
+            response_text = _rendu(self.on_response(response_text, doc_ids, ctx), response_text)
             return AgentResult(response=response_text, trace=trace, ctx=ctx)
 
         messages.append(assistant_message.model_dump(exclude_unset=True))
@@ -251,5 +278,6 @@ class VictimAgent:
         final_message = llm_client.get_completion(messages)
         trace.append(TraceStep("final_response", {"content": final_message.content}))
         response_text = final_message.content or ""
-        self.on_response(response_text, doc_ids, ctx)  # <-- point d'interception AEGIS
+        # Point d'interception AEGIS : le retour REMPLACE la réponse.
+        response_text = _rendu(self.on_response(response_text, doc_ids, ctx), response_text)
         return AgentResult(response=response_text, trace=trace, ctx=ctx)
