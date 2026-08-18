@@ -10,6 +10,7 @@ Lancement (un seul port, rien d'autre à démarrer) :
 from __future__ import annotations
 
 import logging
+import os
 import random
 import uuid
 from pathlib import Path
@@ -19,6 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from aegis_core.grounding import GroundingVerifier
 from aegis_core.injection_detector import InjectionDetector
 from aegis_core.middleware import AegisGuard
 from aegis_core.pii_detector import PiiDetector
@@ -28,7 +30,8 @@ from redteam.run_scenarios import ecarts, joue
 from victim import rag, tools
 from victim.scenarios import SCENARIOS, SCENARIOS_PAR_ID, familles
 from victim.agent import VictimAgent
-from web import ratelimit
+from victim.llm_client import get_completion
+from web import assistant, ratelimit
 
 logger = logging.getLogger("web.app")
 
@@ -699,6 +702,351 @@ def analyze_document(req: AnalyzeDocumentRequest) -> AnalyzeDocumentResult:
         pii_categories=list(pii_scan.categories),
         pii_count=pii_scan.count,
         sanitized_preview=pii_scan.redacted_text[:280],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Assistant sécurité ancré (lot 8)
+# ---------------------------------------------------------------------------
+# Voir `web/assistant.py` pour le raisonnement complet. En deux phrases : la
+# réponse est composée d'extraits réels du dépôt et citée ; un LLM ne peut que
+# la reformuler, et sa sortie est rejetée si elle contient un chiffre ou un
+# identifiant absent des extraits.
+
+
+class AssistantRequest(BaseModel):
+    question: str
+    # Le visiteur peut couper la reformulation pour voir la matière brute. Par
+    # défaut elle est demandée, mais elle ne s'active que si une clé existe.
+    reformuler: bool = True
+
+
+class AssistantSource(BaseModel):
+    titre: str
+    source: str
+    origine: str
+    score: float
+    extrait: str
+
+
+class AssistantResult(BaseModel):
+    reponse: str
+    a_repondu: bool
+    mode_reponse: str  # "ancree" | "reformulee" | "ancree_apres_rejet" | "ancree_requete_bloquee"
+    sources: list[AssistantSource]
+    llm_disponible: bool
+    ancrage: dict | None = None
+    requete_bloquee: bool = False
+    regles_declenchees: list[str] = []
+    note: str = ""
+
+
+MAX_QUESTION_CHARS = 2_000
+
+_grounding = GroundingVerifier()
+
+
+def _sources(reponse: assistant.Reponse) -> list[AssistantSource]:
+    return [
+        AssistantSource(
+            titre=t.extrait.titre,
+            source=t.extrait.source,
+            origine=t.extrait.origine,
+            score=round(t.score, 3),
+            extrait=assistant._resume(t.extrait.texte),
+        )
+        for t in reponse.extraits
+    ]
+
+
+def _llm_configure() -> bool:
+    return bool(os.getenv("OPENROUTER_API_KEY"))
+
+
+@app.post("/api/assistant", response_model=AssistantResult)
+def assistant_repond(req: AssistantRequest, request: Request) -> AssistantResult:
+    """Répond en citant le dépôt. Le LLM est facultatif et sous surveillance.
+
+    Ordre des opérations, et chacune a une raison :
+
+    1. **La question passe par `on_prompt`.** C'est la question d'un inconnu qui
+       va potentiellement dans un prompt : la traiter comme digne de confiance
+       parce qu'elle vient de « notre » interface serait exactement l'erreur que
+       ce projet documente ailleurs sous injection de second ordre. Une requête
+       bloquée par les règles reçoit quand même une réponse ancrée — elle ne
+       part simplement jamais vers un modèle.
+    2. **Réponse déterministe.** Elle marche sans clé, sans réseau, sans coût.
+       C'est la réponse de référence, pas un mode dégradé.
+    3. **Reformulation, sous conditions.** Seulement si une clé existe, si le
+       visiteur l'a demandée, si la requête n'a pas été bloquée et s'il y a
+       quelque chose à reformuler. C'est seulement à ce moment que la garde
+       LLM06 est consommée : un `429` sur une réponse gratuite serait absurde.
+    4. **Vérification d'ancrage.** La sortie du modèle est rejetée si elle
+       contient un chiffre ou un identifiant absent des extraits. On ne corrige
+       pas, on jette : une réponse à moitié inventée reste inventée.
+    """
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question vide.")
+    if len(question) > MAX_QUESTION_CHARS:
+        question = question[:MAX_QUESTION_CHARS]
+
+    decision = _verdict_guard.on_prompt(question, {"agent": "AssistantAegis"})
+    requete_bloquee = decision.decision == "block"
+
+    base = assistant.charge_base()
+    ancree = assistant.repond(question, base)
+    sources = _sources(ancree)
+    llm_dispo = _llm_configure()
+
+    if requete_bloquee:
+        return AssistantResult(
+            reponse=ancree.texte,
+            a_repondu=ancree.a_repondu,
+            mode_reponse="ancree_requete_bloquee",
+            sources=sources,
+            llm_disponible=llm_dispo,
+            requete_bloquee=True,
+            regles_declenchees=list(decision.matched_rules),
+            note=(
+                "Les règles déterministes ont reconnu une tentative d'injection dans la "
+                "question. Elle n'a donc été envoyée à aucun modèle — la réponse ci-dessus "
+                "vient uniquement de la recherche dans le dépôt. C'est le même arbitrage "
+                "que sur un document : seules les règles décident, et elles décident ici "
+                "de ne pas dépenser un appel."
+            ),
+        )
+
+    if not (req.reformuler and llm_dispo and ancree.a_repondu):
+        return AssistantResult(
+            reponse=ancree.texte,
+            a_repondu=ancree.a_repondu,
+            mode_reponse="ancree",
+            sources=sources,
+            llm_disponible=llm_dispo,
+            note=(
+                "Réponse composée directement d'extraits du dépôt, sans appel à un modèle."
+                if llm_dispo
+                else "Aucune clé de modèle configurée : l'assistant fonctionne quand même, "
+                "en citant le dépôt. C'est le mode par défaut, pas un mode dégradé."
+            ),
+        )
+
+    # À partir d'ici seulement, un appel payant peut partir.
+    _garde_appels_llm(request)
+    try:
+        brut = get_completion(
+            [{"role": "user", "content": assistant.prompt_reformulation(question, ancree)}]
+        )
+        reformule = (getattr(brut, "content", None) or "").strip()
+    except Exception as erreur:  # noqa: BLE001 - on veut TOUJOURS une réponse
+        logging.warning("Reformulation impossible (%s) -- repli sur la réponse ancrée.", erreur)
+        return AssistantResult(
+            reponse=ancree.texte, a_repondu=ancree.a_repondu, mode_reponse="ancree",
+            sources=sources, llm_disponible=llm_dispo,
+            note="Le modèle n'a pas répondu ; la réponse ancrée est servie telle quelle.",
+        )
+
+    rapport = _grounding.check(reformule, ancree.sources_brutes())
+    if not reformule or not rapport.ok:
+        return AssistantResult(
+            reponse=ancree.texte,
+            a_repondu=ancree.a_repondu,
+            mode_reponse="ancree_apres_rejet",
+            sources=sources,
+            llm_disponible=llm_dispo,
+            ancrage=rapport.as_dict(),
+            note=(
+                "La reformulation du modèle a été REJETÉE par la vérification d'ancrage "
+                f"({rapport.raison}). La réponse ci-dessus est celle du dépôt. Un chiffre "
+                "inventé sur un projet dont l'argument est « on ne publie que ce qu'on a "
+                "mesuré » ferait plus de dégâts qu'une panne."
+            ),
+        )
+
+    return AssistantResult(
+        reponse=reformule,
+        a_repondu=True,
+        mode_reponse="reformulee",
+        sources=sources,
+        llm_disponible=llm_dispo,
+        ancrage=rapport.as_dict(),
+        note=(
+            "Reformulation par un modèle, vérifiée : chaque chiffre et chaque identifiant "
+            "de cette réponse apparaît dans les extraits cités. La vérification est "
+            "lexicale, pas sémantique — elle empêche d'inventer un chiffre, pas de mal "
+            "l'employer."
+        ),
+    )
+
+
+class AttaqueRequest(BaseModel):
+    message: str
+
+
+class SignalVu(BaseModel):
+    id: str
+    role: str
+    tire: bool
+    valeur: float | None
+    echelle: str
+
+
+class AttaqueResult(BaseModel):
+    message_preview: str
+    requete_bloquee: bool
+    regles_declenchees: list[str]
+    descriptions: list[str]
+    decision_risk: float
+    observed_max_risk: float
+    signaux: list[SignalVu]
+    neutralise: bool
+    contenu_neutralise: str
+    reponse: AssistantResult
+    verdict: str
+    explication: str
+
+
+@app.post("/api/assistant/attack", response_model=AttaqueResult)
+def assistant_attaque(req: AttaqueRequest) -> AttaqueResult:
+    """« Essaie de me pirater » : le message du visiteur traverse la vraie chaîne.
+
+    Deux points d'interception sont joués, parce que ce sont deux menaces
+    différentes et que la démonstration ment si elle n'en montre qu'un :
+
+    * `on_prompt` — le message est traité comme une **requête**. Une requête ne
+      peut pas être neutralisée (on ne remplace pas la question de quelqu'un par
+      un placeholder), donc le choix est binaire, donc seules les règles
+      décident. C'est écrit dans `AegisGuard.on_prompt`, et le taux de faux
+      positifs du classifieur explique pourquoi.
+    * `_content_verdict` — le même message traité comme un **document récupéré**.
+      Là, la neutralisation est possible, et les quatre signaux sont visibles
+      avec leurs échelles respectives.
+
+    Aucun appel LLM : cet écran doit rester gratuit et fonctionner sans clé,
+    comme le reste de la console. Ce que le visiteur voit n'est pas une
+    simulation — ce sont les détecteurs réels, sur son texte.
+    """
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message vide.")
+    if len(message) > MAX_DOCUMENT_CHARS:
+        message = message[:MAX_DOCUMENT_CHARS]
+
+    decision = _verdict_guard.on_prompt(message, {"agent": "AssistantAegis"})
+    bloque_contenu, details = _verdict_guard._content_verdict(message)
+    scan = _injection_detector.scan(message)
+
+    bloquants = set(details["blocking_signals"]) | set(details["advisory_signals"])
+    stuffing = dict(details["stuffing"])
+    signaux = [
+        SignalVu(
+            id="rules", role="bloquant", tire="rules" in bloquants,
+            valeur=float(details["rule_risk"]), echelle="min(1 ; motifs déclenchés / 3)",
+        ),
+        SignalVu(
+            id="injection_ml", role="consultatif", tire="injection_ml" in bloquants,
+            valeur=details["injection_ml_score"],
+            echelle="probabilité softmax, non calibrée",
+        ),
+        SignalVu(
+            id="rag_outlier", role="consultatif", tire="rag_outlier" in bloquants,
+            valeur=float(details["outlier_risk"]),
+            echelle="1 − exp(−distance / seuil) : vaut 0,63 au seuil exact",
+        ),
+        SignalVu(
+            id="retrieval_stuffing", role="consultatif",
+            tire="retrieval_stuffing" in bloquants,
+            valeur=1.0 if stuffing.get("flagged") else 0.0,
+            echelle=f"TTR {stuffing.get('ttr')} sur {stuffing.get('tokens')} mots",
+        ),
+    ]
+
+    # Ce qui atteint réellement le modèle. Quand le message est neutralisé, il
+    # ne reste qu'un marqueur.
+    contenu = "[CONTENU NEUTRALISÉ PAR AEGIS]" if bloque_contenu else message
+
+    # Et surtout : on ne lance PAS la recherche sur ce marqueur.
+    #
+    # La première version le faisait. Le marqueur contient les mots
+    # « contenu », « neutralisé » et « AEGIS », qui remontent évidemment les
+    # scénarios de neutralisation — l'écran affichait donc une réponse longue et
+    # cohérente juste sous « Requête bloquée ». Visuellement, ça donnait
+    # exactement l'inverse de la démonstration : on croyait que l'injection avait
+    # obtenu satisfaction. Une démonstration qui se lit à l'envers ne démontre
+    # rien.
+    if bloque_contenu or decision.decision == "block":
+        ancree = assistant.Reponse(
+            texte=(
+                "Rien à répondre : il ne reste aucun contenu exploitable après le passage "
+                "d'AEGIS. C'est le comportement attendu — l'agent reste debout, la charge "
+                "n'entre pas. Repose ta question sans l'instruction cachée pour voir "
+                "l'assistant fonctionner normalement."
+            ),
+            extraits=(),
+            a_repondu=False,
+        )
+    else:
+        ancree = assistant.repond(contenu, assistant.charge_base())
+
+    if decision.decision == "block":
+        verdict = "Requête bloquée"
+        explication = (
+            "Les règles déterministes ont reconnu une instruction d'injection. La question "
+            "n'atteint pas le modèle. C'est le seul signal habilité à décider ici, et c'est "
+            "délibéré : un refus injustifié sur la question de quelqu'un coûte plus cher "
+            "qu'un bout de contexte perdu sur un document."
+        )
+    elif bloque_contenu:
+        verdict = "Contenu neutralisé"
+        explication = (
+            "Traité comme un document récupéré, ce texte est remplacé par un marqueur avant "
+            "d'entrer dans le contexte. L'agent continue de fonctionner — c'est la différence "
+            "entre neutraliser et refuser."
+        )
+    elif details["advisory_signals"]:
+        tires = ", ".join(details["advisory_signals"])
+        verdict = "Passé, avec réserve"
+        explication = (
+            f"Signal consultatif déclenché ({tires}) : journalisé, compté, sans effet sur la "
+            "décision. Le compteur de ce qu'il aurait fait est ce qui permettra un jour de lui "
+            "rendre ce pouvoir, avec des chiffres plutôt qu'une intuition."
+        )
+        if "rag_outlier" in details["advisory_signals"]:
+            explication += (
+                " Ici c'est très probablement un faux positif : le détecteur d'outliers "
+                "mesure l'éloignement d'un corpus de tickets de support, donc tout texte "
+                "hors de ce registre le fait réagir. Son taux mesuré hors-domaine est publié "
+                "dans la vue d'ensemble, et c'est exactement pourquoi il ne bloque pas."
+            )
+    else:
+        verdict = "Rien à signaler"
+        explication = (
+            "Aucun signal n'a tiré. Ce n'est pas une garantie d'innocuité : les règles sont "
+            "francophones et une paraphrase leur échappe par construction. Les limites sont "
+            "écrites dans le README, section « Limites connues »."
+        )
+
+    return AttaqueResult(
+        message_preview=message[:280],
+        requete_bloquee=decision.decision == "block",
+        regles_declenchees=list(decision.matched_rules),
+        descriptions=list(scan.matched_descriptions),
+        decision_risk=float(details["decision_risk"]),
+        observed_max_risk=float(details["risk"]),
+        signaux=signaux,
+        neutralise=bloque_contenu,
+        contenu_neutralise=contenu[:280],
+        reponse=AssistantResult(
+            reponse=ancree.texte,
+            a_repondu=ancree.a_repondu,
+            mode_reponse="ancree",
+            sources=_sources(ancree),
+            llm_disponible=_llm_configure(),
+            note="Réponse ancrée, calculée sur le message tel qu'AEGIS l'a laissé passer.",
+        ),
+        verdict=verdict,
+        explication=explication,
     )
 
 

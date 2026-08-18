@@ -25,6 +25,7 @@ export type VueId =
   | "scenarios"
   | "document"
   | "classement"
+  | "assistant"
   | "simulation";
 
 export const VUES: {
@@ -71,6 +72,15 @@ export const VUES: {
     section: "BANCS D'ESSAI",
     icone: <IconRank />,
     hint: "L'attaque sur la sélection des documents, rejouable à volonté",
+    sansLlm: true,
+  },
+  {
+    id: "assistant",
+    label: "Assistant",
+    titreLong: "Assistant sécurité",
+    section: "BANCS D'ESSAI",
+    icone: <IconChat />,
+    hint: "Il explique en citant le dépôt, et il se laisse attaquer pour montrer ce qu'il voit",
     sansLlm: true,
   },
   {
@@ -148,7 +158,7 @@ export function AppShell({
           </nav>
 
           <div className="border-t border-[var(--line)] px-5 py-4 text-[11px] leading-relaxed text-[var(--faint)]">
-            Quatre écrans sur cinq fonctionnent sans clé d&apos;API.
+            Cinq écrans sur six fonctionnent sans clé d&apos;API.
           </div>
         </div>
       </aside>
@@ -423,6 +433,14 @@ function IconPlay() {
   );
 }
 
+function IconChat() {
+  return (
+    <svg {...svg}>
+      <path d="M20.5 12.5c0 3.6-3.8 6.5-8.5 6.5-1 0-2-.13-2.9-.37L4 20.5l1.4-3.4C4.2 15.9 3.5 14.3 3.5 12.5 3.5 8.9 7.3 6 12 6s8.5 2.9 8.5 6.5" />
+      <path d="M8.6 12.4h.02M12 12.4h.02M15.4 12.4h.02" />
+    </svg>
+  );
+}
 function IconSearch() {
   return (
     <svg {...svg} width={15} height={15}>

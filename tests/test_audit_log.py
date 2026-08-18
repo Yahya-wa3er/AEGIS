@@ -214,3 +214,66 @@ def test_require_signature_fails_loudly_when_no_key(tmp_path, monkeypatch):
     monkeypatch.delenv("AEGIS_AUDIT_PUBLIC_KEY", raising=False)
     with pytest.raises(AuditSigningError):
         AuditLog(":memory:", require_signature=True)
+
+
+def test_le_journal_est_utilisable_depuis_un_autre_thread():
+    """Défaut trouvé au lot 8, sur un vrai serveur.
+
+    Un `AegisGuard` partagé, construit à l'import d'une application FastAPI,
+    plantait dès qu'un endpoint synchrone était servi depuis le pool de threads
+    de Starlette :
+
+        sqlite3.ProgrammingError: SQLite objects created in a thread can only be
+        used in that same thread.
+
+    Ce n'était pas un défaut de l'endpoint. N'importe quel hôte multi-thread --
+    c'est-à-dire à peu près tous -- aurait rencontré la même chose, et une
+    couche annoncée « branchable sur n'importe quel orchestrateur » ne peut pas
+    exiger d'être appelée depuis le thread qui l'a construite.
+    """
+    import threading
+
+    journal = AuditLog()
+    erreurs: list[Exception] = []
+
+    def ecrire():
+        try:
+            journal.log({"type": "test", "thread": threading.get_ident()})
+        except Exception as e:  # noqa: BLE001 - c'est le sujet du test
+            erreurs.append(e)
+
+    fil = threading.Thread(target=ecrire)
+    fil.start()
+    fil.join()
+
+    assert erreurs == [], erreurs
+    assert len(journal.all_entries()) == 1
+
+
+def test_des_ecritures_concurrentes_ne_cassent_pas_la_chaine():
+    """Lever la contrainte de thread sans verrou serait pire que le bug.
+
+    `log()` fait lire-le-dernier-hash PUIS insérer. Deux threads entrelacés
+    chaîneraient deux entrées sur le même prédécesseur : la chaîne d'audit
+    casse, la preuve devient invalide, et le résultat est indiscernable d'une
+    falsification. C'est pour ça que le verrou couvre la séquence entière et pas
+    seulement l'INSERT.
+    """
+    import threading
+
+    journal = AuditLog()
+    fils = [
+        threading.Thread(target=lambda n=n: journal.log({"type": "test", "n": n}))
+        for n in range(40)
+    ]
+    for f in fils:
+        f.start()
+    for f in fils:
+        f.join()
+
+    entrees = journal.all_entries()
+    assert len(entrees) == 40
+    # Chaque entrée doit chaîner sur la précédente : aucun prev_hash dupliqué.
+    prevs = [e.prev_hash for e in entrees]
+    assert len(set(prevs)) == len(prevs)
+    assert journal.verify_integrity().ok

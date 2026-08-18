@@ -144,6 +144,28 @@ jobs:
         # existe, ce qui n'était pas le cas.
         run: python -m scripts.benchmark_latency --iterations 100 --json /tmp/latence.json
 
+      - name: Aucune mesure codée en dur dans l'assistant
+        # L'assistant compose ses réponses à partir du README, des scénarios et
+        # des fichiers de métriques, relus à l'exécution. Un chiffre recopié à
+        # la main dans `web/assistant.py` dériverait de sa source -- défaut déjà
+        # payé deux fois : sur `data/` au lot 5A (corpus versionné qui ne
+        # correspondait plus à son générateur) et sur le TTR figé de la console
+        # au lot 7. Le contrôle passe par l'AST du module, pas par une regex sur
+        # le texte : la première version signalait la prose des commentaires qui
+        # explique justement pourquoi il ne faut pas coder un chiffre en dur.
+        run: |
+          python - <<'PY'
+          import sys
+          from web.assistant import mesures_en_dur
+          suspects = mesures_en_dur()
+          if suspects:
+              print("::error::des littéraux numériques sont codés en dur dans web/assistant.py")
+              for s in suspects:
+                  print(f"  {s}")
+              sys.exit(1)
+          print("aucune mesure codée en dur : OK")
+          PY
+
       - name: Contrastes de la console (WCAG 2.1 AA)
         # Une première version de globals.css annonçait des ratios que personne
         # n'avait calculés : quatre échouaient, dont le texte blanc de la pilule

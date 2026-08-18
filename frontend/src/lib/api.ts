@@ -8,6 +8,8 @@
  * panne pour un fonctionnement normal.
  */
 import type {
+  AssistantResult,
+  AttaqueResult,
   DocumentAnalysis,
   RankingComparison,
   ScenarioCatalogue,
@@ -79,3 +81,13 @@ export const compareRanking = (
   if (injecte) params.set("injecte", injecte);
   return call<RankingComparison>(`/api/ranking?${params.toString()}`);
 };
+
+/** Question à l'assistant ancré. `reformuler: false` force la réponse brute,
+ *  composée d'extraits du dépôt — c'est aussi le seul mode garanti gratuit. */
+export const askAssistant = (question: string, reformuler: boolean) =>
+  call<AssistantResult>("/api/assistant", postJson({ question, reformuler }));
+
+/** « Essaie de me pirater » : le message traverse la vraie chaîne de détection.
+ *  Aucun appel LLM — l'écran doit rester gratuit et fonctionner sans clé. */
+export const attackAssistant = (message: string) =>
+  call<AttaqueResult>("/api/assistant/attack", postJson({ message }));

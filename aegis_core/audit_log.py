@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -159,7 +160,29 @@ class AuditLog:
         else:
             self._pseudonymizer = pseudonymizer
         self._signer = signer if signer is not None else load_signer(required=require_signature)
-        self._conn = sqlite3.connect(db_path)
+        # `check_same_thread=False` + un verrou, et pas l'un sans l'autre.
+        #
+        # Défaut trouvé au lot 8 : un `AegisGuard` partagé, construit à l'import
+        # d'un serveur web, plante dès qu'un endpoint synchrone est servi depuis
+        # le pool de threads de Starlette --
+        #
+        #     sqlite3.ProgrammingError: SQLite objects created in a thread can
+        #     only be used in that same thread.
+        #
+        # Ce n'était pas un défaut de l'endpoint : n'importe quel hôte
+        # multi-thread, c'est-à-dire à peu près tous, aurait rencontré la même
+        # chose. Une couche de sécurité annoncée « branchable sur n'importe quel
+        # orchestrateur » ne peut pas exiger d'être appelée depuis le thread qui
+        # l'a construite.
+        #
+        # Lever la contrainte de thread SANS sérialiser les écritures serait
+        # pire que le bug : `log()` fait lire-le-dernier-hash puis insérer, et
+        # deux threads entrelacés produiraient deux entrées chaînées sur le même
+        # prédécesseur — une chaîne d'audit cassée, donc une preuve invalide,
+        # indiscernable d'une falsification. Le verrou couvre la séquence
+        # entière, pas seulement l'INSERT.
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -219,23 +242,29 @@ class AuditLog:
         """
         if self._pseudonymizer is not None:
             event = self._pseudonymizer.pseudonymize(event)
-        prev_hash = self._last_hash()
-        timestamp = time.time()
-        new_hash = self._compute_hash(timestamp, event, prev_hash)
-        # On signe le hash : il couvre déjà (timestamp, event, prev_hash), donc la
-        # signature lie l'entrée entière ET sa position dans la chaîne.
-        signature = self._signer.sign(new_hash.encode("utf-8"))
-        self._conn.execute(
-            "INSERT INTO audit_log (timestamp, event, prev_hash, hash, signature) VALUES (?, ?, ?, ?, ?)",
-            (timestamp, json.dumps(event, ensure_ascii=False), prev_hash, new_hash, signature),
-        )
-        self._conn.commit()
+        # Le verrou couvre lire-le-dernier-hash ET insérer. Le scinder en deux
+        # sections critiques laisserait deux threads chaîner sur le même
+        # prédécesseur, ce qui casse la chaîne d'audit -- et une chaîne cassée
+        # est indiscernable d'une falsification.
+        with self._lock:
+            prev_hash = self._last_hash()
+            timestamp = time.time()
+            new_hash = self._compute_hash(timestamp, event, prev_hash)
+            # On signe le hash : il couvre déjà (timestamp, event, prev_hash),
+            # donc la signature lie l'entrée entière ET sa position dans la chaîne.
+            signature = self._signer.sign(new_hash.encode("utf-8"))
+            self._conn.execute(
+                "INSERT INTO audit_log (timestamp, event, prev_hash, hash, signature) VALUES (?, ?, ?, ?, ?)",
+                (timestamp, json.dumps(event, ensure_ascii=False), prev_hash, new_hash, signature),
+            )
+            self._conn.commit()
         return new_hash
 
     def all_entries(self) -> list[AuditEntry]:
-        rows = self._conn.execute(
-            "SELECT id, timestamp, event, prev_hash, hash, signature FROM audit_log ORDER BY id ASC"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, timestamp, event, prev_hash, hash, signature FROM audit_log ORDER BY id ASC"
+            ).fetchall()
         return [
             AuditEntry(id=r[0], timestamp=r[1], event=json.loads(r[2]), prev_hash=r[3], hash=r[4], signature=r[5])
             for r in rows

@@ -444,7 +444,7 @@ cd frontend && npm run build && cd ..
 python -m uvicorn web.app:app --reload
 ```
 
-Barre latérale, cinq écrans, et un seul qui dépend d'un service externe.
+Barre latérale, six écrans, et un seul qui dépend d'un service externe.
 
 | écran | ce qu'il montre | appel LLM |
 |---|---|---|
@@ -452,9 +452,10 @@ Barre latérale, cinq écrans, et un seul qui dépend d'un service externe.
 | **Banc de scénarios** | 12 situations sur les 5 points d'interception, le signal qui a tiré et celui qui avait le droit de décider | non |
 | **Analyse de document** | l'arbitrage réel appliqué à un texte collé, glissé-déposé ou importé par le visiteur, signal par signal et chacun avec son échelle | non |
 | **Laboratoire de classement** | les deux classements côte à côte, document hostile injecté à la volée | non |
+| **Assistant sécurité** | il répond en citant le dépôt, et se laisse attaquer pour montrer ce que les détecteurs voient | non par défaut |
 | **Simulation complète** | l'agent réel, avec et sans protection | oui |
 
-Quatre écrans sur cinq fonctionnent sans clé d'API : la partie du produit qui décide ne dépend d'aucun service externe, et la console doit pouvoir le montrer plutôt que l'affirmer. La recherche de la barre supérieure (⌘K) filtre réellement les écrans et les scénarios, titres, familles, attendus et mots-clés compris.
+Cinq écrans sur six fonctionnent sans clé d'API : la partie du produit qui décide ne dépend d'aucun service externe, et la console doit pouvoir le montrer plutôt que l'affirmer. La recherche de la barre supérieure (⌘K) filtre réellement les écrans et les scénarios, titres, familles, attendus et mots-clés compris.
 
 ### Ce que la console refuse de faire
 
@@ -547,6 +548,63 @@ env:
 Sans ça, l'absence de clé sur le runner *masquait* le problème au lieu de le révéler. Vérifié : la suite complète passe en 10 s avec cette configuration, donc aucun autre test ne sortait sur le réseau.
 
 Une conséquence de conception, apprise en corrigeant : le limiteur vit sur `app.state`, pas dans une variable de module. La première version était un singleton de module, et le seul moyen de le reconfigurer dans un test était `importlib.reload(web.app)` — qui réécrit le dictionnaire du module partagé par toute la session pytest. Un test de limitation vidait le seau, et un test d'un autre fichier recevait `429` là où il attendait `404`. Le défaut n'était pas dans le test : un composant de garde qui n'est pas remplaçable sans effet de bord global n'est pas non plus déployable sans surprise.
+
+### L'assistant sécurité, et pourquoi il ne parle pas librement
+
+Un assistant branché directement sur un LLM aurait été plus rapide à écrire et plus agréable à lire. Il aurait aussi été parfaitement capable de répondre « AEGIS bloque 97 % des injections » avec aplomb — sur l'écran fait pour convaincre, dans un dépôt dont l'argument central est *un chiffre qu'on publie, on l'a mesuré*. Ce n'est pas une erreur de détail : c'est l'argument du projet retourné contre lui-même.
+
+L'assistant est donc **ancré par construction**, en quatre couches :
+
+1. **La réponse est composée d'extraits réels** — sections du README, scénarios du banc, mesures relues dans `models/*/metrics.json`. Chaque extrait est cité avec sa source et son score, et le visiteur peut le déplier.
+2. **Un modèle ne peut que reformuler.** Il n'intervient que si une clé existe et que le visiteur l'a demandé, et sa consigne lui interdit d'ajouter, de calculer, d'arrondir ou de convertir un chiffre.
+3. **Sa sortie est vérifiée** par `aegis_core/grounding.py` : tout littéral numérique et tout identifiant de code absent des extraits fait **rejeter** la reformulation. On ne corrige pas, on jette — une réponse à moitié inventée reste inventée. L'écran affiche le rejet quand il arrive, parce que le montrer vaut mieux que le cacher.
+4. **Il a le droit de ne pas savoir.** Quand la recherche ne ramène rien de pertinent, il le dit.
+
+Ce dernier point a demandé trois garde-fous, pas un, et chacun a été ajouté après avoir vu le précédent échouer sur une question de cuisine sans le moindre rapport avec le projet.
+
+1. **Filtrer les mots vides.** Les articles et auxiliaires français apparaissent dans tout le README ; BM25 leur donnait un score non nul, et l'assistant servait les trois passages les moins mauvais comme s'ils répondaient.
+2. **Exiger une couverture, pas un appui.** Un seul mot en commun ne suffit pas : BM25 accorde un poids IDF élevé à un terme rare, donc un mot inhabituel et hors sujet pesait plus lourd que trois mots absents. Un extrait n'est retenu que s'il contient au moins la moitié des mots porteurs de la question.
+3. **Un score plancher**, qui écarte le passage « le moins mauvais » quand tout le reste a échoué.
+
+Une conséquence à connaître, découverte en écrivant ce paragraphe : le corpus de l'assistant **est** ce README. Y citer une question hors sujet mot pour mot la faisait entrer dans le champ des réponses possibles, et la question de cuisine recevait soudain une réponse — la section qui explique pourquoi elle devrait être refusée. Les contre-exemples littéraux vivent donc dans les commentaires de `web/assistant.py`, qui ne sont pas indexés. Un test le vérifie en s'assurant d'abord qu'aucun mot de sa question d'essai n'est présent dans le corpus, puis que l'assistant refuse de répondre : si quelqu'un réintroduit ces mots dans le README, le test le dira au lieu d'échouer mystérieusement.
+
+Le classement est **le même BM25** que le laboratoire de classement (`victim.rag.rank`), pas une seconde implémentation qui dériverait. La manipulation de classement démontrée ailleurs suppose que l'attaquant puisse écrire dans l'index ; ici l'index est fait du README et des scénarios du dépôt, et le visiteur ne contrôle que la requête. La propriété est énoncée, pas supposée : si l'assistant indexait un jour un document fourni par l'utilisateur, cette phrase deviendrait fausse.
+
+Enfin, **aucun chiffre n'est écrit en dur** dans `web/assistant.py`, et un test le vérifie en analysant l'AST du module. Un chiffre recopié dérive de sa source — c'est le défaut corrigé au lot 5A sur `data/`, puis au lot 7 sur le TTR figé de la console.
+
+#### Ce que la vérification d'ancrage ne fait pas
+
+Ça compte autant que ce qu'elle fait, et c'est figé par des tests pour ne pas être oublié :
+
+* **Aucune inférence sémantique.** « Le détecteur bloque 100 % des attaques » et « le détecteur laisse passer 100 % des attaques » contiennent les mêmes chiffres et les mêmes mots. Le vérificateur accepte les deux. Ancrer le *sens* demande un modèle d'inférence (NLI), et ce n'est pas fait.
+* **Les nombres en toutes lettres passent.** « quatre-vingt-dix-sept pour cent » n'est pas un littéral numérique.
+
+Autrement dit : ce module rend impossible d'**inventer** un chiffre, pas de le **mal employer**. C'est une garantie étroite, et elle est écrite plutôt que résumée en « réponses vérifiées ».
+
+Cela ferme une partie du trou **LLM07** que ce README signalait depuis le début — *« Manque la vérification d'ancrage : la réponse est-elle réellement soutenue par la source citée ? »* — la partie numérique, qui est celle qui compte ici.
+
+### « Essaie de me pirater »
+
+Le second mode de l'écran fait traverser au message du visiteur la **vraie chaîne de détection**, sur deux points d'interception parce que ce sont deux menaces différentes :
+
+* `on_prompt` — le message traité comme une **requête**. Une requête ne peut pas être neutralisée (on ne remplace pas la question de quelqu'un par un placeholder), donc le choix est binaire, donc seules les règles décident.
+* `_content_verdict` — le même message traité comme un **document récupéré**. Là, la neutralisation est possible, et les quatre signaux sont affichés avec leurs échelles respectives.
+
+Aucun appel LLM : l'écran reste gratuit et fonctionne sans clé, comme le reste de la console.
+
+Un défaut vu à l'écran avant livraison mérite d'être raconté. La première version relançait la recherche documentaire sur le contenu neutralisé, c'est-à-dire sur le marqueur `[CONTENU NEUTRALISÉ PAR AEGIS]`. Ce marqueur contient les mots « contenu », « neutralisé » et « AEGIS », qui remontent évidemment les scénarios de neutralisation : la console affichait donc une longue réponse cohérente juste sous « Requête bloquée ». Visuellement, on croyait que l'injection avait obtenu satisfaction. Une démonstration qui se lit à l'envers ne démontre rien.
+
+### Deux défauts de fond trouvés en construisant l'assistant
+
+**Le journal d'audit n'était pas utilisable depuis un autre thread.** Un `AegisGuard` partagé, construit à l'import d'une application FastAPI, plantait dès qu'un endpoint synchrone était servi depuis le pool de threads de Starlette :
+
+```
+sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread
+```
+
+Ce n'était pas un défaut de l'endpoint : n'importe quel hôte multi-thread — c'est-à-dire à peu près tous — aurait rencontré la même chose, et une couche annoncée « branchable sur n'importe quel orchestrateur » ne peut pas exiger d'être appelée depuis le thread qui l'a construite. Corrigé par `check_same_thread=False` **et un verrou**, pas l'un sans l'autre : `log()` fait lire-le-dernier-hash puis insérer, et deux threads entrelacés chaîneraient deux entrées sur le même prédécesseur — une chaîne d'audit cassée est une preuve invalide, indiscernable d'une falsification. Deux tests le figent, dont un qui lance quarante écritures concurrentes et vérifie qu'aucun `prev_hash` n'est dupliqué.
+
+**Une suite de tests qui dépense de l'argent, deuxième fois.** Le lot 7.2b avait corrigé des tests qui appelaient réellement OpenRouter. Les tests de l'assistant, écrits *après* avoir documenté ce cas, ont refait exactement la même chose. La leçon est qu'une discipline qu'on se rappelle d'appliquer n'en est pas une : le repli sûr doit être structurel. `tests/conftest.py` interdit désormais tout appel LLM réel par défaut (un test qui a besoin du chemin LLM remplace `get_completion`, ou se marque `@pytest.mark.autorise_appel_llm`), et rend à chaque test un limiteur et une enveloppe neufs — la contamination entre fichiers de tests corrigée au lot 7.2b était elle aussi revenue, parce que la correction vivait dans un fichier au lieu de vivre dans l'infrastructure.
 
 ### Couleurs et contrastes
 
@@ -735,7 +793,7 @@ Le tableau ci-dessous est une évaluation honnête de ce qui est réellement cou
 | LLM04 | Supply Chain *(3ᵉ → 4ᵉ)* | ⚠️ partielle | Plus de chargement pickle, dépendances figées, artefacts vérifiés par SHA-256. Manque : SBOM, signature du bundle de modèles, provenance. |
 | LLM05 | Data and Model Poisoning | ⚠️ partielle | Détection d'outliers à la récupération. Rien à l'indexation, aucune provenance ni signature de document. |
 | LLM06 | **Unbounded Consumption** *(10ᵉ → 6ᵉ)* | ⚠️ partielle | Trois états bornés : la mémoire par session (expiration + éviction), le **débit par client** (seau à jetons) et l'**enveloppe globale d'appels LLM** sur fenêtre glissante, avec jeton partagé facultatif — `web/ratelimit.py`. Manque : budget de **jetons** et plafond de **coût** (on compte des appels, pas des tokens), borne sur les boucles d'agent, et les compteurs vivent en mémoire de processus — derrière plusieurs répliques, le plafond réel est multiplié par leur nombre. |
-| LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ amorce | La vérification de citation est la bonne intuition. Manque la vérification d'ancrage : la réponse est-elle réellement *soutenue* par la source citée ? |
+| LLM07 | Misinformation *(9ᵉ → 7ᵉ)* | ⚠️ partielle | Vérification de citation, plus une **vérification d'ancrage numérique et lexicale** (`aegis_core/grounding.py`) : une réponse générée dont un chiffre ou un identifiant n'apparaît pas dans ses sources est rejetée, pas corrigée. Manque l'ancrage **sémantique** : « bloque 100 % » et « laisse passer 100 % » ont les mêmes chiffres et passent tous les deux — il faudrait un modèle d'inférence. Les nombres en toutes lettres échappent aussi au contrôle. |
 | LLM08 | **Hidden Context Exposure** *(ex-System Prompt Leakage)* | 🔴 absente | Rien ne détecte que le modèle restitue son prompt système. |
 | LLM09 | Vector and Embedding Weaknesses | ⚠️ partielle | Détection d'outliers TF-IDF, classement BM25 (longueur normalisée) et détection de bourrage de classement — **évasion hybride mesurée et non couverte**. L'état comportemental est isolé par `(tenant, agent, session)`, mais **l'index ne l'est pas** : pas de contrôle d'accès, pas de partition par locataire, pas de plafond sur la part d'un document dans le contexte. |
 | LLM10 | Improper Output Handling *(5ᵉ → 10ᵉ)* | 🔴 absente | Les retours d'outils et la réponse finale traversent sans validation. Le frontend échappe correctement (React, pas de `dangerouslySetInnerHTML`), mais c'est le seul rempart et il est côté client. |
@@ -759,6 +817,9 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 | Durcissement RAG (filtre PII/secrets, outliers embeddings) | ✅ Phase 3 : outliers d'embeddings (TF-IDF, voir limites) + citation obligatoire + assainissement PII/secrets par regex (voir limites) |
 | Red-teaming automatisé | ✅ V0 fonctionnelle, corpus enrichi (10 contrôles bénins diversifiés), taux publiés avec intervalle de confiance -- corpus encore trop petit pour conclure (voir limites) |
 | Dashboard SOC | ✅ V1 (dashboard Next.js interactif, comparaison protégé/non-protégé) -- alerting et historique en Phase 5 |
+| Limitation de consommation (LLM06) | ✅ Lot 7.2 — seau à jetons par client, enveloppe globale sur fenêtre glissante, jeton partagé ; compte des appels, pas des tokens |
+| Assistant sécurité ancré | ✅ Lot 8 — réponses composées d'extraits cités, reformulation LLM facultative rejetée si un chiffre n'est pas soutenu, mode « essaie de me pirater » sans appel LLM |
+| Vérification d'ancrage (LLM07) | ⚠️ Lot 8 — ancrage numérique et lexical vérifié ; ancrage sémantique (NLI) non fait |
 
 ## En une phrase
 

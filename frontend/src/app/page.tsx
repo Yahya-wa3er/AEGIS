@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from "react";
 import { AppShell, type VueId } from "@/components/AppShell";
+import { AssistantPanel } from "@/components/AssistantPanel";
 import { DocumentLab } from "@/components/DocumentLab";
 import { Overview } from "@/components/Overview";
 import { RankingLab } from "@/components/RankingLab";
@@ -55,6 +56,7 @@ export default function Console() {
       )}
       {vue === "document" && <DocumentLab />}
       {vue === "classement" && <RankingLab />}
+      {vue === "assistant" && <AssistantPanel />}
       {vue === "simulation" && <SimulationPanel />}
     </AppShell>
   );

@@ -239,3 +239,66 @@ export type ConsommationReport = {
   endpoints_limites: string[];
   jeton_partage: boolean;
 };
+
+// -- assistant sécurité ancré (lot 8) --------------------------------------
+
+/** Un passage réel du dépôt, cité à l'appui d'une réponse.
+ *
+ *  L'assistant ne « sait » rien : il retrouve et cite. C'est ce qui rend une
+ *  réponse vérifiable par le lecteur au lieu d'être à croire sur parole. */
+export type AssistantSource = {
+  titre: string;
+  source: string;
+  origine: string;
+  score: number;
+  extrait: string;
+};
+
+/** Rapport du vérificateur d'ancrage sur une reformulation par un modèle.
+ *
+ *  Le contrôle est lexical : il empêche d'inventer un chiffre, pas de mal
+ *  l'employer. Cette nuance est affichée à l'écran, pas seulement documentée. */
+export type AncrageReport = {
+  ok: boolean;
+  raison: string | null;
+  nombres_non_soutenus: string[];
+  identifiants_non_soutenus: string[];
+  nombres_verifies: number;
+  identifiants_verifies: number;
+};
+
+export type AssistantResult = {
+  reponse: string;
+  a_repondu: boolean;
+  /** "ancree" | "reformulee" | "ancree_apres_rejet" | "ancree_requete_bloquee" */
+  mode_reponse: string;
+  sources: AssistantSource[];
+  llm_disponible: boolean;
+  ancrage: AncrageReport | null;
+  requete_bloquee: boolean;
+  regles_declenchees: string[];
+  note: string;
+};
+
+export type SignalVu = {
+  id: string;
+  role: string;
+  tire: boolean;
+  valeur: number | null;
+  echelle: string;
+};
+
+export type AttaqueResult = {
+  message_preview: string;
+  requete_bloquee: boolean;
+  regles_declenchees: string[];
+  descriptions: string[];
+  decision_risk: number;
+  observed_max_risk: number;
+  signaux: SignalVu[];
+  neutralise: boolean;
+  contenu_neutralise: string;
+  reponse: AssistantResult;
+  verdict: string;
+  explication: string;
+};
