@@ -1,0 +1,162 @@
+/* AEGIS — polish visuel au-dessus du thème Material par défaut.
+   S'appuie sur les variables CSS de Material (--md-*) pour rester correct
+   en thème clair et sombre sans dupliquer de palette. */
+
+/* Un peu plus d'air et une largeur de ligne plus confortable à lire. */
+.md-typeset {
+  line-height: 1.7;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset h2 {
+  margin-top: 2.2em;
+  padding-top: 0.4em;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset h1 + p,
+.md-typeset h2 + p {
+  margin-top: 0.6em;
+}
+
+.md-typeset p {
+  max-width: 46rem;
+}
+
+/* ---- Bandeau héros (page d'accueil) ---- */
+.aegis-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin: 0 0 2rem;
+  padding: 2rem 2.2rem;
+  border-radius: 0.6rem;
+  background: linear-gradient(135deg, var(--md-primary-fg-color) 0%, #303f9f 100%);
+  color: var(--md-primary-bg-color);
+}
+
+.aegis-hero h1 {
+  margin: 0;
+  color: var(--md-primary-bg-color);
+  font-size: 2rem;
+}
+
+.aegis-hero p {
+  margin: 0;
+  max-width: 44rem;
+  font-size: 1.05rem;
+  opacity: 0.94;
+}
+
+.aegis-hero .md-button {
+  color: var(--md-primary-bg-color);
+}
+
+/* ---- Bandes de statistiques / badges ---- */
+.aegis-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.9rem;
+  margin: 1.6rem 0 2.2rem;
+}
+
+.aegis-stat {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.4rem;
+  background: var(--md-code-bg-color);
+  text-align: center;
+}
+
+.aegis-stat strong {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--md-primary-fg-color);
+  line-height: 1.2;
+}
+
+.aegis-stat span {
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color--light);
+}
+
+/* ---- Badges de statut inline (bloquant / consultatif / mixte) ---- */
+.aegis-badge {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.aegis-badge--block {
+  background: color-mix(in srgb, #d32f2f 16%, transparent);
+  color: #b71c1c;
+}
+
+.aegis-badge--advisory {
+  background: color-mix(in srgb, #f9a825 20%, transparent);
+  color: #8d6e00;
+}
+
+.aegis-badge--mixed {
+  background: color-mix(in srgb, #1565c0 16%, transparent);
+  color: #0d47a1;
+}
+
+[data-md-color-scheme="slate"] .aegis-badge--block { color: #ff8a80; }
+[data-md-color-scheme="slate"] .aegis-badge--advisory { color: #ffd54f; }
+[data-md-color-scheme="slate"] .aegis-badge--mixed { color: #82b1ff; }
+
+/* ---- Grilles de cartes (nécessite attr_list + md_in_html) ---- */
+.md-typeset .grid.cards > ul {
+  gap: 0.75rem;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.5rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* ---- Tableaux : un peu plus respirés, en-tête plus marqué ---- */
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+}
+
+.md-typeset table:not([class]) {
+  font-size: 0.68rem;
+}
+
+/* ---- Admonitions "chiffre clé" personnalisées ---- */
+.md-typeset .admonition.chiffre,
+.md-typeset details.chiffre {
+  border-color: var(--md-primary-fg-color);
+}
+
+.md-typeset .chiffre > .admonition-title,
+.md-typeset .chiffre > summary {
+  background-color: color-mix(in srgb, var(--md-primary-fg-color) 10%, transparent);
+}
+
+.md-typeset .chiffre > .admonition-title::before,
+.md-typeset .chiffre > summary::before {
+  background-color: var(--md-primary-fg-color);
+  -webkit-mask-image: var(--md-admonition-icon--note);
+  mask-image: var(--md-admonition-icon--note);
+}
