@@ -50,3 +50,6 @@ demo_audit.db
 build/
 dist/
 *.egg-info/
+
+# Site MkDocs genere localement (ReadTheDocs le construit lui-meme)
+site/

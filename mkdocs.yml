@@ -1,0 +1,76 @@
+site_name: AEGIS — Documentation
+site_description: >-
+  Zero-Trust Security Layer pour agents LLM et pipelines RAG — couverture
+  OWASP GenAI LLM Top 10, édition 2026.
+site_author: Yahya El Houti
+repo_url: https://github.com/Yahya-wa3er/AEGIS
+repo_name: Yahya-wa3er/AEGIS
+edit_uri: edit/main/docs/
+copyright: >-
+  MIT — voir <a href="https://github.com/Yahya-wa3er/AEGIS/blob/main/LICENSE">LICENSE</a>.
+  Projet de recherche / démonstration, pas un produit audité pour la production.
+
+theme:
+  name: material
+  language: fr
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Basculer en thème sombre
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Basculer en thème clair
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+      title: Sur cette page
+
+nav:
+  - Accueil: index.md
+  - Modèle de menace et architecture: architecture.md
+  - Les composants, un par un: composants.md
+  - Couverture OWASP LLM Top 10: owasp.md
+  - Méthodologie de mesure: mesure.md
+  - MLOps — registre, promotion, dérive: mlops.md
+  - Chaîne d'approvisionnement: chaine-approvisionnement.md
+  - Limites connues, consolidées: limites.md
+  - Chemin vers un déploiement de production: deploiement.md
+  - Feuille de route priorisée: feuille-de-route.md
+  - Brancher AEGIS sur un agent existant: integration.md
+  - Cartes de modèles:
+      - Vue d'ensemble: model_cards/index.md
+      - rag_outlier: model_cards/rag_outlier.md
+      - behavior_vae: model_cards/behavior_vae.md
+  - Statistiques du projet: statistiques.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Yahya-wa3er/AEGIS

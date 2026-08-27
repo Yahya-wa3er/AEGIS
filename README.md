@@ -4,6 +4,9 @@
 
 Preuve de concept fonctionnelle : un agent de support client (`victim/`) volontairement naïf, piloté par un vrai LLM (via OpenRouter), et une couche de sécurité (`aegis_core/`) qui l'intercepte pour neutraliser les injections de prompt, appliquer le principe du moindre privilège sur les appels d'outils, et repérer les comportements d'agent statistiquement anormaux — le tout journalisé dans un log chaîné et signé (Ed25519), vérifiable par un tiers.
 
+📖 **[Documentation complète](https://aegis-guard.readthedocs.io/)** — architecture, mécanique de chaque composant, méthodologie de mesure, MLOps, limites connues et chemin vers un déploiement de production.
+<!-- TODO : confirmer l'URL exacte une fois le projet importé sur readthedocs.org (le slug peut différer de "aegis-guard" selon ce que readthedocs.org attribue). -->
+
 ## Le problème
 
 Un agent IA agentique combine trois surfaces de faiblesse : les documents qu'il récupère (RAG), les outils qu'il peut appeler, et son comportement dans la durée. Un document contenant une instruction cachée peut détourner l'agent pour lui faire exécuter des actions non désirées (virement, fuite de données...) sans que l'utilisateur ne s'en aperçoive. C'est le risque "Prompt Injection" (indirecte) de l'OWASP Top 10 pour applications LLM (édition 2025).
