@@ -1,5 +1,7 @@
 # AEGIS — Zero-Trust Security Layer pour Systèmes IA Agentiques & RAG
 
+> **Statut : projet de recherche / démonstration technique**, pas un produit prêt pour la production tel quel. L'objectif est d'explorer et de **mesurer** — pas de promettre — une couche de sécurité zero-trust pour agents LLM, avec la même discipline que ce que le projet vérifie chez les autres : chaque taux publié est mesuré et reproductible (voir "Comment les chiffres de ce README sont produits"), et chaque limite connue est documentée *et testée*, pas seulement mentionnée. Ce que ça implique concrètement pour un déploiement réel (état partagé, gestion de secrets, HSM pour la clé de signature, etc.) est écrit noir sur blanc plus bas, section "Limites connues".
+
 Preuve de concept fonctionnelle : un agent de support client (`victim/`) volontairement naïf, piloté par un vrai LLM (via OpenRouter), et une couche de sécurité (`aegis_core/`) qui l'intercepte pour neutraliser les injections de prompt, appliquer le principe du moindre privilège sur les appels d'outils, et repérer les comportements d'agent statistiquement anormaux — le tout journalisé dans un log chaîné et signé (Ed25519), vérifiable par un tiers.
 
 ## Le problème
@@ -949,3 +951,7 @@ Note de lecture : les identifiants utilisés jusqu'ici dans `redteam/payloads.py
 ## En une phrase
 
 AEGIS est une couche de sécurité qui s'intercale entre un agent IA et le monde extérieur (données récupérées, outils) : elle détecte et neutralise les instructions cachées avant qu'elles n'atteignent le modèle, applique le principe du moindre privilège sur les actions, repère les comportements d'agent statistiquement anormaux, et garde de chaque décision une trace signée qu'un tiers peut vérifier sans pouvoir la falsifier.
+
+## Licence
+
+MIT — voir [`LICENSE`](LICENSE). Réutilisation, modification et redistribution libres, y compris à des fins commerciales, à condition de conserver la mention de copyright. Fourni sans garantie (voir le texte de la licence) : ce dépôt est un projet de recherche/démonstration, pas un produit audité pour la production.
